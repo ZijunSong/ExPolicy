@@ -1,0 +1,4 @@
+base_model: /data/ppnm/models/Qwen2.5-3B-Instruct
+lora_rank: 8
+lr: 0.0002
+steps: 40

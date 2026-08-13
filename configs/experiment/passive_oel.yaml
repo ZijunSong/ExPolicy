@@ -1,0 +1,27 @@
+run_name: passive_oel
+seed: 13
+output_dir: outputs
+variant: B2
+acquisition: passive
+assimilation: heuristic
+enable_harness_evolution: false
+enable_weight_update: true
+stage: 0
+split: deployment
+probe_limit: 8
+model:
+  backend: transformers
+  path: /data/ppnm/models/Qwen2.5-3B-Instruct
+  dtype: bfloat16
+  embedder_path: /data/ppnm/models/all-MiniLM-L6-v2
+environment:
+  kind: search
+  seed: 13
+  world_path: data/world/helion.json
+harness:
+  max_steps: 8
+  search_top_k: 5
+  temperature: 0.0
+budget:
+  max_tasks: 32
+  acquisition_batch: 4

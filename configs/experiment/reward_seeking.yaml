@@ -1,0 +1,20 @@
+run_name: reward_seeking
+seed: 13
+output_dir: outputs
+variant: RQ4
+acquisition: reward_seeking
+assimilation: heuristic
+enable_harness_evolution: false
+enable_weight_update: false
+stage: 0
+split: acquisition
+model:
+  backend: transformers
+  path: /data/ppnm/models/Qwen2.5-3B-Instruct
+  embedder_path: /data/ppnm/models/all-MiniLM-L6-v2
+environment:
+  seed: 13
+  world_path: data/world/helion.json
+budget:
+  max_tasks: 24
+  acquisition_batch: 8

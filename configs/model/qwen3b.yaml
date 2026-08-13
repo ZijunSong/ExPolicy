@@ -1,0 +1,4 @@
+backend: transformers
+path: /data/ppnm/models/Qwen2.5-3B-Instruct
+dtype: bfloat16
+embedder_path: /data/ppnm/models/all-MiniLM-L6-v2

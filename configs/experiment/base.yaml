@@ -1,0 +1,32 @@
+run_name: static_base
+seed: 13
+output_dir: outputs
+variant: B0
+acquisition: passive
+assimilation: heuristic
+enable_harness_evolution: false
+enable_weight_update: false
+stage: 0
+split: validation
+probe_limit: 8
+model:
+  backend: transformers
+  path: /data/ppnm/models/Qwen2.5-3B-Instruct
+  dtype: bfloat16
+  embedder_path: /data/ppnm/models/all-MiniLM-L6-v2
+environment:
+  kind: search
+  seed: 13
+  world_path: data/world/helion.json
+  top_k: 5
+harness:
+  max_steps: 8
+  search_top_k: 5
+  enable_verifier: true
+  min_evidence_before_answer: 1
+  temperature: 0.0
+budget:
+  max_tasks: 60
+  max_env_steps: 20000
+  max_tokens: 8000000
+  acquisition_batch: 8

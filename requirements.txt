@@ -1,0 +1,18 @@
+# Locked runtime dependencies for ExPolicy (pip install -r requirements.txt)
+numpy==2.2.6
+pydantic==2.11.7
+pyyaml==6.0.2
+omegaconf==2.3.0
+typer==0.16.0
+rich==14.0.0
+rank-bm25==0.2.2
+scikit-learn==1.7.0
+networkx==3.5
+orjson==3.10.18
+tenacity==9.1.2
+httpx==0.28.1
+jsonlines==4.0.0
+filelock==3.18.0
+
+# Training / inference extras (install when GPU stack is available)
+# torch, transformers, accelerate, peft, trl, datasets, faiss-cpu

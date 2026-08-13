@@ -1,0 +1,4 @@
+kind: search
+seed: 13
+world_path: data/world/helion.json
+top_k: 5

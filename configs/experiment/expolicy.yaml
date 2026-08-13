@@ -1,0 +1,27 @@
+run_name: full_expolicy
+seed: 13
+output_dir: outputs
+variant: B7
+acquisition: learned
+assimilation: learned
+enable_harness_evolution: true
+enable_weight_update: true
+stage: 0
+split: acquisition
+probe_limit: 8
+model:
+  backend: transformers
+  path: /data/ppnm/models/Qwen2.5-3B-Instruct
+  dtype: bfloat16
+  embedder_path: /data/ppnm/models/all-MiniLM-L6-v2
+environment:
+  kind: search
+  seed: 13
+  world_path: data/world/helion.json
+harness:
+  max_steps: 8
+  search_top_k: 5
+  temperature: 0.0
+budget:
+  max_tasks: 24
+  acquisition_batch: 4
