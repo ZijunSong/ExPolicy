@@ -557,57 +557,75 @@ def build_world(seed: int = 13, *, n_people: int = 72, n_orgs: int = 24, n_event
             fact_ids=[fid],
         )
 
-    # Confusable near-names for disambiguation
-    twin_a = person_list[3]
-    twin_b = person_list[15]
-    facts["fact_disambig_mira"] = {
-        "kind": "disambig",
-        "name_a": twin_a.name,
-        "role_a": twin_a.role,
-        "org_a": orgs[twin_a.org_id].name,
-        "name_b": twin_b.name,
-        "role_b": twin_b.role,
-        "org_b": orgs[twin_b.org_id].name,
-        "shared_token": twin_a.name.split()[0],
-    }
-    add_doc(
-        f"Name collision memo: {twin_a.name.split()[0]}",
-        [
-            f"Two archive subjects share the given name {twin_a.name.split()[0]}: "
-            f"{twin_a.name} ({twin_a.role} at {orgs[twin_a.org_id].name}) and "
-            f"{twin_b.name} ({twin_b.role} at {orgs[twin_b.org_id].name}).",
-            "Do not merge their records.",
-        ],
-        source_type="official",
-        reliability=0.96,
-        year=2024,
-        city="Aurel",
-        fact_ids=["fact_disambig_mira"],
-    )
+    # Confusable near-names for disambiguation (all shared given names)
+    from collections import defaultdict
 
-    # Long-context chain documents
-    chain_people = person_list[20:28]
-    chain_bits = []
-    for idx, person in enumerate(chain_people):
-        nxt = chain_people[(idx + 1) % len(chain_people)]
-        bit = f"{person.name} transferred a sealed crate code C-{idx + 1} to {nxt.name}."
-        chain_bits.append(bit)
+    by_first: dict[str, list[Person]] = defaultdict(list)
+    for person in person_list:
+        by_first[person.name.split()[0]].append(person)
+    disambig_pairs: list[tuple[Person, Person]] = []
+    for first, group in by_first.items():
+        if len(group) < 2:
+            continue
+        a, b = group[0], group[1]
+        disambig_pairs.append((a, b))
+        fid = f"fact_disambig_{first.lower()}"
+        facts[fid] = {
+            "kind": "disambig",
+            "name_a": a.name,
+            "role_a": a.role,
+            "org_a": orgs[a.org_id].name,
+            "name_b": b.name,
+            "role_b": b.role,
+            "org_b": orgs[b.org_id].name,
+            "shared_token": first,
+        }
         add_doc(
-            f"Transfer slip {idx + 1}",
-            [bit, f"The slip was filed at {orgs[person.org_id].name}."],
+            f"Name collision memo: {first}",
+            [
+                f"Two archive subjects share the given name {first}: "
+                f"{a.name} ({a.role} at {orgs[a.org_id].name}) and "
+                f"{b.name} ({b.role} at {orgs[b.org_id].name}).",
+                "Do not merge their records.",
+            ],
             source_type="official",
-            reliability=0.9,
-            year=2020 + idx,
-            city=orgs[person.org_id].hq_city,
-            fact_ids=["fact_chain"],
+            reliability=0.96,
+            year=2024,
+            city="Aurel",
+            fact_ids=[fid],
         )
-    facts["fact_chain"] = {
-        "kind": "chain",
-        "start": chain_people[0].name,
-        "end": chain_people[-1].name,
-        "codes": [f"C-{i}" for i in range(1, len(chain_people) + 1)],
-        "holder_of_c3": chain_people[3].name,
-    }
+    twin_a, twin_b = disambig_pairs[0] if disambig_pairs else (person_list[3], person_list[15])
+
+    # Long-context chains (multiple crate series)
+    chain_specs: list[dict[str, Any]] = []
+    for chain_i in range(8):
+        start = 8 + chain_i * 6
+        chain_people = person_list[start : start + 5]
+        if len(chain_people) < 5:
+            continue
+        prefix = f"C{chain_i + 1}"
+        fid = f"fact_chain_{chain_i}"
+        holder_idx = 2
+        for idx, person in enumerate(chain_people[:-1]):
+            nxt = chain_people[idx + 1]
+            code = f"{prefix}-{idx + 1}"
+            bit = f"{person.name} transferred a sealed crate code {code} to {nxt.name}."
+            add_doc(
+                f"Transfer slip {prefix}-{idx + 1}",
+                [bit, f"The slip was filed at {orgs[person.org_id].name}."],
+                source_type="official",
+                reliability=0.9,
+                year=2018 + chain_i,
+                city=orgs[person.org_id].hq_city,
+                fact_ids=[fid],
+            )
+        facts[fid] = {
+            "kind": "chain",
+            "prefix": prefix,
+            "holder": chain_people[holder_idx].name,
+            "code": f"{prefix}-{holder_idx}",
+        }
+        chain_specs.append(facts[fid] | {"fid": fid, "people": chain_people})
 
     tasks: dict[str, Task] = {}
 

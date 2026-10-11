@@ -101,10 +101,16 @@ class FailureReplayAcquisition(AcquisitionPolicy):
         *,
         recent: Sequence[Experience] | None = None,
     ) -> list[AcquisitionProposal]:
-        failed_caps = [
-            name
-            for name, _ in sorted(capability_profile.failure_distribution.items(), key=lambda kv: -kv[1])
+        cap_from_recent: list[str] = []
+        if recent:
+            from collections import Counter
+
+            fail_caps = Counter(e.capability or "unknown" for e in recent if not e.success)
+            cap_from_recent = [name for name, _ in fail_caps.most_common()]
+        low_score = [
+            name for name, _ in sorted(capability_profile.capability_scores.items(), key=lambda kv: kv[1])
         ]
+        failed_caps = list(dict.fromkeys(cap_from_recent + capability_profile.frontier_names() + low_score))
         chosen: list[Task] = []
         for cap in failed_caps:
             for task in candidate_pool:
@@ -169,6 +175,50 @@ class FrontierAcquisition(AcquisitionPolicy):
         ]
 
 
+class FrontierCapNormAcquisition(AcquisitionPolicy):
+    """Frontier scores with capability-wise z-normalization at ranking time.
+
+    Does not change the underlying frontier signal, read future probes, or
+    inject a temporal bonus. Ranking uses z = (score - cap_mean) / (cap_std + eps).
+    """
+
+    name = "frontier_capnorm"
+
+    def propose(
+        self,
+        agent_state: PersistentAgentState,
+        capability_profile: CapabilityProfile,
+        candidate_pool: Sequence[Task],
+        budget: int,
+        *,
+        recent: Sequence[Experience] | None = None,
+    ) -> list[AcquisitionProposal]:
+        inner = FrontierAcquisition()
+        props = inner.propose(agent_state, capability_profile, candidate_pool, budget, recent=recent)
+        raw = dict(props[0].scores or {})
+        by_cap: dict[str, list[float]] = {}
+        for task in candidate_pool:
+            by_cap.setdefault(task.capability or "unknown", []).append(float(raw.get(task.task_id, 0.0)))
+        stats: dict[str, tuple[float, float]] = {}
+        for cap, vals in by_cap.items():
+            mu = sum(vals) / len(vals) if vals else 0.0
+            var = sum((v - mu) ** 2 for v in vals) / len(vals) if vals else 0.0
+            stats[cap] = (mu, math.sqrt(var))
+        zscores: dict[str, float] = {}
+        for task in candidate_pool:
+            mu, sd = stats.get(task.capability or "unknown", (0.0, 0.0))
+            zscores[task.task_id] = (float(raw.get(task.task_id, 0.0)) - mu) / (sd + 1e-8)
+        ranked = sorted(candidate_pool, key=lambda t: zscores[t.task_id], reverse=True)[:budget]
+        return [
+            AcquisitionProposal(
+                mode="frontier_capnorm",
+                task_ids=[t.task_id for t in ranked],
+                scores=zscores,
+                rationale="frontier score z-normalized within capability; no temporal bonus",
+            )
+        ]
+
+
 class RewardSeekingAcquisition(AcquisitionPolicy):
     name = "reward_seeking"
 
@@ -197,15 +247,38 @@ class RewardSeekingAcquisition(AcquisitionPolicy):
         ]
 
 
-def make_acquisition(name: str, seed: int = 0) -> AcquisitionPolicy:
+def make_acquisition(name: str, seed: int = 0, **kwargs) -> AcquisitionPolicy:
     mapping = {
         "passive": PassiveAcquisition,
         "uncertainty": UncertaintyAcquisition,
         "failure_replay": FailureReplayAcquisition,
         "frontier": FrontierAcquisition,
+        "frontier_capnorm": FrontierCapNormAcquisition,
         "reward_seeking": RewardSeekingAcquisition,
         "random": PassiveAcquisition,
     }
+    if name in {"coverage", "coverage_balanced"}:
+        from expolicy.acquisition.coverage import CoverageBalancedAcquisition
+
+        return CoverageBalancedAcquisition(seed=seed)
+    if name in {"ace_skill_prioritized", "ace_skill"}:
+        from expolicy.acquisition.ace_skill import AceSkillPrioritizedAcquisition
+
+        return AceSkillPrioritizedAcquisition(seed=seed, **kwargs)
+    if name in {"exact_ava", "ava"}:
+        from expolicy.acquisition.ava import ExactAVAAcquisition
+
+        return ExactAVAAcquisition(seed=seed, **kwargs)
+    if name in {"random_cluster"}:
+        from expolicy.acquisition.ava import RandomClusterAcquisition
+
+        return RandomClusterAcquisition(seed=seed, **kwargs)
+    if name in {"rasa", "rasa_full", "rasa_k8", "rasa_qonly", "rasa_nodiversity"}:
+        from expolicy.acquisition.rasa import RASAAcquisition
+
+        qonly = bool(kwargs.pop("qonly", name == "rasa_qonly"))
+        diversity = bool(kwargs.pop("diversity", name != "rasa_nodiversity"))
+        return RASAAcquisition(seed=seed, qonly=qonly, diversity=diversity, **kwargs)
     if name == "learned":
         from expolicy.acquisition.learned_policy import LearnedAcquisition
 

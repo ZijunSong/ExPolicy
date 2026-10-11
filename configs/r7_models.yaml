@@ -1,0 +1,21 @@
+# R7 model table. Embedding models are excluded.
+models:
+  primary:
+    - Qwen2.5-3B-Instruct
+    - Qwen2.5-7B-Instruct
+    - Qwen3-4B-Instruct-2507
+    - Qwen3-4B-Thinking-2507
+    - Phi-4-reasoning
+    - gpt-oss-20b
+  secondary:
+    - Qwen3-1.7B
+    - gemma-4-E4B-it
+    - Qwen3-30B-A3B-Thinking-2507
+    - harness-1
+  excluded_embedding_only:
+    - all-MiniLM-L6-v2
+    - cross-encoder-ms-marco-MiniLM-L-6-v2
+    - e5-base-v2
+root: /data/ppnm/models
+dtype: bfloat16
+forbid_silent_quantization: true

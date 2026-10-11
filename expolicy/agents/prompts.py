@@ -45,8 +45,9 @@ def build_user_prompt(
 ) -> str:
     parts = [f"Question: {question}"]
     if memories:
-        parts.append("Episodic memories (similar past episodes):")
-        parts.extend(f"- {m}" for m in memories[:6])
+        parts.append("Episodic procedure cards (do NOT copy stored answers or document ids):")
+        for i, mem in enumerate(memories[:3], 1):
+            parts.append(f"Memory {i}:\n{mem}")
     if rules:
         parts.append("Semantic rules:")
         parts.extend(f"- {r}" for r in rules[:8])

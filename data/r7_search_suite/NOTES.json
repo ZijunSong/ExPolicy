@@ -1,0 +1,4 @@
+{
+  "popqa": "test_only_partition n=14267; no replacement sampling; other datasets untouched",
+  "bamboogle": "used_all n=125; no replacement sampling"
+}

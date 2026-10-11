@@ -64,6 +64,68 @@ class TransformersBackend(ModelBackend):
         self.model.eval()
         self.max_input_tokens = max_input_tokens
         self._adapter_path: str | None = None
+        self._model_path = str(path)
+        self._torch_dtype = torch_dtype
+        self._base_model = self.model
+
+    def unload_adapter(self) -> None:
+        torch = self.torch
+        if self._adapter_path is None and self.model is self._base_model:
+            return
+        try:
+            from peft import PeftModel
+
+            if isinstance(self.model, PeftModel):
+                try:
+                    self.model = self.model.get_base_model()
+                except Exception:
+                    self.model = self._base_model
+        except ImportError:
+            self.model = self._base_model
+        self.model.to(self.device)
+        self.model.eval()
+        self._adapter_path = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def rebuild(self) -> None:
+        """Destroy the current instance and reload the base checkpoint."""
+        torch = self.torch
+        from transformers import AutoModelForCausalLM
+
+        try:
+            del self.model
+        except Exception:
+            pass
+        self._adapter_path = None
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self._model_path,
+            dtype=self._torch_dtype,
+            trust_remote_code=True,
+        )
+        self.model.to(self.device)
+        self.model.eval()
+        self._base_model = self.model
+
+    def load(self, path: str) -> None:
+        try:
+            from peft import PeftModel
+        except ImportError as exc:
+            raise BackendUnavailableError("peft is required to load a LoRA adapter") from exc
+        adapter = Path(path)
+        if not adapter.exists():
+            raise BackendUnavailableError(f"adapter path missing: {path}")
+        self.unload_adapter()
+        base = self._base_model
+        if isinstance(base, PeftModel):
+            base = base.get_base_model()
+        self.model = PeftModel.from_pretrained(base, str(adapter))
+        self.model.to(self.device)
+        self.model.eval()
+        self._adapter_path = str(adapter)
 
     def generate(
         self,
@@ -126,19 +188,6 @@ class TransformersBackend(ModelBackend):
             logprobs=logprobs,
             stop_reason="eos",
         )
-
-    def load(self, path: str) -> None:
-        try:
-            from peft import PeftModel
-        except ImportError as exc:
-            raise BackendUnavailableError("peft is required to load a LoRA adapter") from exc
-        adapter = Path(path)
-        if not adapter.exists():
-            raise BackendUnavailableError(f"adapter path missing: {path}")
-        self.model = PeftModel.from_pretrained(self.model, str(adapter))
-        self.model.to(self.device)
-        self.model.eval()
-        self._adapter_path = str(adapter)
 
     def save(self, path: str) -> None:
         Path(path).mkdir(parents=True, exist_ok=True)

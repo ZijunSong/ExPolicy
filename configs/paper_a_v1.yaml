@@ -1,0 +1,110 @@
+# A-v1 protocol lock. Thresholds are pre-registered. Do not retune them from outcomes.
+# Asset pins were read from the files on disk. Loading the config recomputes those
+# hashes and refuses to start if the files differ.
+
+protocol_id: A-v1
+protocol_version: "2026-10-10"
+
+model:
+  model_id: Q2
+  hf_repo: Qwen/Qwen3-14B
+  local_path: /data/ppnm/models/Qwen3-14B
+  dtype: bfloat16
+  thinking: false
+  thinking_mode: "enable_thinking False"
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 1024
+  inference_seed: 0
+  served_name: qwen3-14b-r9
+  manifest_path: outputs/r9_lab/model_manifest.json
+  expect_manifest_content_hash: 54cf96633ac469b0518fa158a74b4659c618116ec0ac8bcc8c1e5e51739619a1
+  expect_screen_split_sha256: 6eec40c9112f49cc6a53c5ad29357e3c2873f63af175ee08d4995bfcb73b2fb8
+
+split:
+  path: outputs/r9_lab/split.json
+  expect_seed: 20260822
+  expect_content_sha256: 63ca95237468378f5eb3a74df0875b23c38f00a2c4bf58200d4473df350bf989
+  expect_file_sha256: 6eec40c9112f49cc6a53c5ad29357e3c2873f63af175ee08d4995bfcb73b2fb8
+
+frozen_batches:
+  path: outputs/r9_lab/FROZEN_BATCHES.json
+  expect_sha256: 90e18920f75a3134d257cb58ad4477760bf675b3023bb0836f75eba73adeac8f
+  expect_n_batches: 36
+
+capability:
+  # Historical training-side summary. Not the shadow probe used as the utility label.
+  path: outputs/r9_lab/R9_FOUNDATION.csv
+  source: calibration
+
+environments: [db, os, kg]
+actions: [DISCARD, EPISODIC_REPLAY, SEMANTIC_MEMORY]
+excluded_actions: [SKILLOPT_EDIT]
+
+metric:
+  name: U
+  retention_weight: 0.5
+  subtract_discard: false
+  future_test_in_selection: false
+
+measurement:
+  equivalence_success: 0.01
+  noise_repeats: 3
+  repeats_are_independent_seeds: false
+  audit_batches_per_env: 2
+  # Current matrix runner submits episodes serially. Raising this requires a real
+  # concurrent replay; a serial result must not be renamed as that replay.
+  formal_concurrency: 1
+  require_formal_concurrency_replay: true
+  ci_z: 1.96
+
+space:
+  min_positive_batches: 4
+  min_non_discard_actions: 2
+  min_envs_with_crossover: 2
+  delta_floor: 0.02
+  resolution_tasks: 2
+  resample_budget: 1
+
+router:
+  outer_folds: 3
+  ridge_alpha: 1.0
+  bootstrap_replicates: 200
+  bootstrap_quantile: 0.10
+  threshold_grid: [0.0, 0.01, 0.02, 0.05]
+  default_threshold: 0.0
+  min_tree_samples: 80
+  primary_comparison: [M, B3]
+  pilot_variants: [B0, B1, B2, B3, M]
+  attribution_variants: [B4, B5, A1, A2, A3, A4]
+
+decision:
+  min_gain_vs_env_only: 0.02
+  retention_tolerance: 0.01
+  min_sequences: 3
+  suggested_sequences: 5
+  sequence_rounds: 4
+  experiences_per_round: 8
+  eval_rounds: [0, 2, 4]
+
+budget:
+  probe_episodes_before_remaining_approval: 20
+
+simple_rule:
+  - when: {batch_success_rate_lt: 0.25}
+    action: DISCARD
+  - when: {conflict_rate_gte: 0.5}
+    action: DISCARD
+  - when: {memory_similarity_gte: 0.6}
+    action: SEMANTIC_MEMORY
+  - when: {batch_success_rate_gte: 0.5, memory_size_lte: 0}
+    action: EPISODIC_REPLAY
+  - default: DISCARD
+
+outputs:
+  root: outputs/paper_a_v1
+
+legacy:
+  r9_matrix: outputs/r9_lab/matrix
+  # R9 aggregate cells are indexed and then left alone. They are not rows of the A-v1 matrix.
+  splice_into_matrix: false

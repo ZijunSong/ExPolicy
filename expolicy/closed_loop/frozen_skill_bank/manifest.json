@@ -1,0 +1,63 @@
+{
+  "compiler": "r7.frozen_skill.v1",
+  "git_head": "5c9dbf22eab3b43c6c65433037def2fb927d3b2f",
+  "execute_sha256": "5ef88446e0a19ab15cdfb00ed6d09ac95d67350df4d4a4312f8ec06e4d880e22",
+  "skills": [
+    {
+      "skill_id": "r7.frozen.bridge_decomposition",
+      "capability": "bridge_decomposition",
+      "tool_sequence": [
+        "search",
+        "open",
+        "search",
+        "open",
+        "answer"
+      ],
+      "validated_before_r7": true,
+      "r7_mutable": false,
+      "source_path": "expolicy/environments/public_search/skills.py::skill_c1_bridge",
+      "source_git_head": "5c9dbf22eab3b43c6c65433037def2fb927d3b2f",
+      "sha256": "03673d6c9d47ee3022c7d2e9e5bcdd6ba71d13a03da68eb1762d4b07b45d7f64",
+      "execute_sha256": "5ef88446e0a19ab15cdfb00ed6d09ac95d67350df4d4a4312f8ec06e4d880e22",
+      "source_sha256": "3e8d0d268ae93909c35457fcd52de78675cb43329e60ce0589c257d143b596ed"
+    },
+    {
+      "skill_id": "r7.frozen.comparison_alignment",
+      "capability": "comparison_alignment",
+      "tool_sequence": [
+        "search",
+        "open",
+        "search",
+        "open",
+        "answer"
+      ],
+      "validated_before_r7": true,
+      "r7_mutable": false,
+      "source_path": "expolicy/environments/public_search/skills.py::skill_c2_comparison",
+      "source_git_head": "5c9dbf22eab3b43c6c65433037def2fb927d3b2f",
+      "sha256": "d93c9f6d893c19510c189f61412b3819955ba7d407ac7faaa211d7809a65acf5",
+      "execute_sha256": "5ef88446e0a19ab15cdfb00ed6d09ac95d67350df4d4a4312f8ec06e4d880e22",
+      "source_sha256": "3e8d0d268ae93909c35457fcd52de78675cb43329e60ce0589c257d143b596ed"
+    },
+    {
+      "skill_id": "r7.frozen.long_chain_search",
+      "capability": "long_chain_search",
+      "tool_sequence": [
+        "search",
+        "open",
+        "search",
+        "open",
+        "search",
+        "open",
+        "answer"
+      ],
+      "validated_before_r7": true,
+      "r7_mutable": false,
+      "source_path": "expolicy/environments/public_search/skills.py::skill_c3_long_chain",
+      "source_git_head": "5c9dbf22eab3b43c6c65433037def2fb927d3b2f",
+      "sha256": "6835befa66f1e9de0d124df14d57a137a8d43170080eeff00cc06c0d7a9040b8",
+      "execute_sha256": "5ef88446e0a19ab15cdfb00ed6d09ac95d67350df4d4a4312f8ec06e4d880e22",
+      "source_sha256": "3e8d0d268ae93909c35457fcd52de78675cb43329e60ce0589c257d143b596ed"
+    }
+  ]
+}

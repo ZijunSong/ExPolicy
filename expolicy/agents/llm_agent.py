@@ -30,6 +30,9 @@ class LLMSearchAgent(BaseAgent):
         logger: EventLogger | None = None,
         memory_retriever: Any | None = None,
         skill_store: Any | None = None,
+        use_executable_skill: bool = False,
+        memory_mode: str = "hybrid",
+        system_prompt: str | None = None,
     ) -> None:
         self.model = model
         self.env = env
@@ -37,14 +40,35 @@ class LLMSearchAgent(BaseAgent):
         self.logger = logger
         self.memory_retriever = memory_retriever
         self.skill_store = skill_store
+        self.use_executable_skill = use_executable_skill
+        self.memory_mode = memory_mode
+        self.system_prompt = system_prompt or SYSTEM_PROMPT
+        self.last_retrieval: dict[str, Any] = {}
 
     def run_task(self, task: Task, state: PersistentAgentState | None = None) -> Experience:
         harness = state.harness if state is not None else self.harness
         started = time.perf_counter()
         self.env.reset(task)
+        if (
+            self.use_executable_skill
+            and self.skill_store is not None
+            and hasattr(self.skill_store, "executable_for")
+        ):
+            skill = self.skill_store.executable_for(task.capability)
+            if skill is not None:
+                from expolicy.assimilation.carriers.skill_store import run_skill_on_task
+
+                exp = run_skill_on_task(skill, self.env, task)
+                exp.agent_version = state.version if state else None
+                if self.logger:
+                    self.logger.emit(
+                        "TASK_FINISHED",
+                        {"task_id": task.task_id, "success": exp.success, "skill": skill.name},
+                    )
+                return exp
         memories, rules, skills = self._context(task, state)
         messages: list[dict[str, str]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             {
                 "role": "user",
                 "content": build_user_prompt(
@@ -63,7 +87,13 @@ class LLMSearchAgent(BaseAgent):
             capability=task.capability,
             stage=task.stage,
             split=task.split,
-            capability_context={"capability": task.capability, "stage": task.stage, "hops": task.hops},
+            capability_context={
+                "capability": task.capability,
+                "stage": task.stage,
+                "hops": task.hops,
+                "n_distractors": len(task.distractor_doc_ids),
+                "q_tokens": len(task.question.split()),
+            },
             initial_state={"question": task.question, "tools": self.env.available_tools()},
             agent_version=state.version if state else None,
         )
@@ -208,10 +238,38 @@ class LLMSearchAgent(BaseAgent):
         memories: list[str] = []
         rules: list[str] = []
         skills: list[str] = []
+        self.last_retrieval = {}
         if self.memory_retriever is not None and state is not None:
-            memories = self.memory_retriever.retrieve(task.question, k=5)
-            rules = self.memory_retriever.rules(k=8)
-        if self.skill_store is not None:
+            from expolicy.experiments.patterns import expected_failure_signature, normalized_pattern
+
+            kwargs = {
+                "k": 3,
+                "capability": task.capability,
+                "failure_signature": expected_failure_signature(task.capability),
+                "task_pattern": normalized_pattern(task.task_id),
+                "mode": self.memory_mode,
+            }
+            retrieve = self.memory_retriever.retrieve
+            try:
+                memories, debug = retrieve(task.question, return_debug=True, **kwargs)
+            except TypeError:
+                memories = retrieve(task.question, k=5)
+                debug = []
+            rules = self.memory_retriever.rules(k=8) if hasattr(self.memory_retriever, "rules") else []
+            used = 0
+            for card in memories:
+                blob = card.lower()
+                if task.capability and task.capability.replace("_", " ") in blob.replace("_", " "):
+                    used += 1
+                elif normalized_pattern(task.task_id) in blob:
+                    used += 1
+            self.last_retrieval = {
+                "n": len(memories),
+                "debug": debug,
+                "memory_used_rate": used / max(len(memories), 1),
+                "mode": self.memory_mode,
+            }
+        if self.skill_store is not None and not self.use_executable_skill:
             skills = self.skill_store.summaries()
         return memories, rules, skills
 

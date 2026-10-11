@@ -8,6 +8,7 @@ from expolicy.assimilation.carriers.semantic_memory import SemanticMemory
 from expolicy.assimilation.carriers.skill_store import SkillStore
 from expolicy.core.experience import ExperienceAbstraction
 from expolicy.environments.search.environment import SearchEnvironment
+from expolicy.experiments.common import load_world
 
 
 def test_semantic_merge_and_supersede(tmp_path: Path) -> None:
@@ -34,7 +35,7 @@ def test_semantic_merge_and_supersede(tmp_path: Path) -> None:
 
 
 def test_skill_invoke_runs_real_tools(tmp_path: Path) -> None:
-    env = SearchEnvironment.from_seed(13)
+    env = SearchEnvironment(load_world())
     task = next(t for t in env.world.tasks.values() if t.capability == "single_hop")
     env.reset(task)
     store = SkillStore(tmp_path)

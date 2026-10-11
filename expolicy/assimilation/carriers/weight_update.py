@@ -1,30 +1,72 @@
-"""Real LoRA / QLoRA internalization from verified experiences."""
+"""Real LoRA / QLoRA internalization from verified successful trajectories."""
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Sequence
 
 from expolicy.core.errors import BackendUnavailableError, TrainingDivergenceError
 from expolicy.core.experience import Experience
 
+_DOC_ID = re.compile(r"\bdoc_\d+\b", re.I)
+
+
+def _sanitize(text: str) -> str:
+    return _DOC_ID.sub("[DOC]", text or "")
+
+
+def _reasoning_state(exp: Experience) -> str:
+    queries = []
+    for call in exp.tool_calls:
+        if call.get("tool") == "search":
+            q = (call.get("arguments") or {}).get("query")
+            if q:
+                queries.append(_sanitize(str(q)))
+    opened_titles = []
+    for ev in exp.evidence:
+        title = ev.get("title") or ev.get("source_type") or "opened_doc"
+        opened_titles.append(str(title))
+    tools = [str(c.get("tool")) for c in exp.tool_calls]
+    return (
+        f"capability={exp.capability}; tools={' -> '.join(tools)}\n"
+        f"search_queries={queries}\n"
+        f"opened_sources={opened_titles[:4]}"
+    )
+
 
 def build_sft_rows(experiences: Sequence[Experience]) -> list[dict[str, str]]:
+    """Supervised rows from verified success only. No document-id shortcuts."""
     rows = []
     for exp in experiences:
         if not exp.success:
             continue
-        transcript = []
-        for action, obs in zip(exp.actions, exp.observations, strict=False):
-            transcript.append(f"Action: {action.get('tool')} {action.get('arguments')}")
-            transcript.append(f"Observation: {str(obs)[:800]}")
+        evidence_snips = []
+        for obs in exp.observations:
+            if not isinstance(obs, dict):
+                continue
+            payload = obs.get("payload") if obs.get("tool") == "open" else None
+            if isinstance(payload, dict) and payload.get("text"):
+                src = payload.get("source_type") or "doc"
+                evidence_snips.append(f"[{src}] {_sanitize(str(payload['text'])[:500])}")
         prompt = (
-            f"Question: {exp.question}\n"
-            f"Use search/open/find then answer.\n" + "\n".join(transcript)
+            "You are a search agent. Decompose, search, open evidence, then answer.\n"
+            f"Task: {_sanitize(exp.question)}\n"
+            f"State: {_reasoning_state(exp)}\n"
+            "Verified evidence:\n"
+            + ("\n".join(evidence_snips[:4]) or "(opened supporting documents)")
+            + "\nEmit the next tool call, or the final short answer."
         )
         completion = f"<tool>answer</tool>\n<arg>{exp.predicted_answer}</arg>"
-        rows.append({"prompt": prompt, "completion": completion, "experience_id": exp.experience_id})
+        rows.append(
+            {
+                "prompt": prompt,
+                "completion": completion,
+                "experience_id": exp.experience_id,
+                "task_id": exp.task_id,
+            }
+        )
     return rows
 
 
@@ -38,10 +80,13 @@ class WeightUpdater:
         self,
         experiences: Sequence[Experience],
         *,
-        steps: int = 30,
-        lr: float = 1e-4,
+        steps: int | None = None,
+        epochs: int = 2,
+        lr: float = 5e-5,
         lora_rank: int = 8,
         max_seq_len: int = 1024,
+        batch_size: int = 1,
+        early_stop_patience: int = 8,
     ) -> dict[str, Any]:
         rows = build_sft_rows(experiences)
         if not rows:
@@ -76,15 +121,20 @@ class WeightUpdater:
         model.to(device)
         model.train()
         optimizer = AdamW([p for p in model.parameters() if p.requires_grad], lr=lr)
+        n_rows = len(rows)
+        total_steps = steps if steps is not None else max(1, epochs * n_rows)
         losses: list[float] = []
-        for step in range(steps):
-            row = rows[step % len(rows)]
-            text = row["prompt"] + "\n" + row["completion"]
+        best = float("inf")
+        stale = 0
+        for step in range(total_steps):
+            batch_rows = [rows[(step * batch_size + j) % n_rows] for j in range(batch_size)]
+            texts = [row["prompt"] + "\n" + row["completion"] for row in batch_rows]
             encoded = tokenizer(
-                text,
+                texts,
                 return_tensors="pt",
                 truncation=True,
                 max_length=max_seq_len,
+                padding=True,
             )
             encoded = {k: v.to(device) for k, v in encoded.items()}
             encoded["labels"] = encoded["input_ids"].clone()
@@ -95,17 +145,33 @@ class WeightUpdater:
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            losses.append(float(loss.detach().cpu()))
+            val = float(loss.detach().cpu())
+            losses.append(val)
+            if val + 1e-4 < best:
+                best = val
+                stale = 0
+            else:
+                stale += 1
+            if stale >= early_stop_patience and step >= n_rows:
+                break
         adapter_dir = self.output_dir / "lora"
         adapter_dir.mkdir(parents=True, exist_ok=True)
         model.save_pretrained(str(adapter_dir))
         tokenizer.save_pretrained(str(adapter_dir))
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         summary = {
             "n_rows": len(rows),
-            "steps": steps,
+            "steps": len(losses),
+            "epochs": epochs,
+            "lr": lr,
+            "lora_rank": lora_rank,
             "mean_loss": sum(losses) / len(losses),
             "final_loss": losses[-1],
+            "best_loss": best,
             "adapter_dir": str(adapter_dir),
+            "training_data_ids": [r["experience_id"] for r in rows],
         }
         (self.output_dir / "train_metrics.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return summary

@@ -29,6 +29,7 @@ class EventLogger:
             "event_type": name,
             "payload": payload or {},
         }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("ab") as handle:
             handle.write(orjson.dumps(record))
             handle.write(b"\n")

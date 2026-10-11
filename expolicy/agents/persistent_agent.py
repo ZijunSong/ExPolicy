@@ -22,8 +22,8 @@ class MemoryFacade:
         self.episodic = episodic
         self.semantic = semantic
 
-    def retrieve(self, query: str, k: int = 5) -> list[str]:
-        return self.episodic.retrieve(query, k=k)
+    def retrieve(self, query: str, k: int = 5, **kwargs):
+        return self.episodic.retrieve(query, k=k, **kwargs)
 
     def rules(self, k: int = 8) -> list[str]:
         return self.semantic.active_texts(k=k)

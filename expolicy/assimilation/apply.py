@@ -7,7 +7,15 @@ from typing import Any
 from expolicy.assimilation.carriers.episodic_memory import EpisodicMemory
 from expolicy.assimilation.carriers.harness_store import HarnessStore
 from expolicy.assimilation.carriers.semantic_memory import SemanticMemory
-from expolicy.assimilation.carriers.skill_store import Skill, SkillStep, SkillStore
+from expolicy.assimilation.carriers.skill_store import (
+    Skill,
+    SkillStep,
+    SkillStore,
+    skill_a_multihop,
+    skill_b_temporal,
+    skill_c_crossdoc,
+    validate_skill_schema,
+)
 from expolicy.assimilation.carriers.weight_update import WeightUpdater
 from expolicy.core.experience import AssimilationDecision, Experience, ExperienceAbstraction
 from expolicy.core.state import PersistentAgentState
@@ -69,22 +77,28 @@ class CarrierRuntime:
         elif carrier == Carrier.SKILL:
             if self.skills is None:
                 raise RuntimeError("skill store is not attached")
-            skill = Skill(
-                name=f"skill_{experience.capability or 'gen'}_{experience.task_id}",
-                preconditions=abstraction.preconditions,
-                procedure=[
-                    SkillStep(op=op) if op in {"search", "open", "find"} else SkillStep(op="search")
-                    for op in abstraction.action_pattern
-                    if op in {"search", "open", "find"}
-                ]
-                or [SkillStep(op="search", query_template="{query}"), SkillStep(op="open")],
-                provenance=[experience.experience_id],
-            )
+            skill = _executable_skill_from_experience(experience, abstraction)
+            errors = validate_skill_schema(skill)
+            if errors:
+                # fall back to prompt-only procedure only if schema is invalid
+                skill = Skill(
+                    name=f"skill_{experience.capability or 'gen'}_{experience.task_id}",
+                    preconditions=abstraction.preconditions,
+                    procedure=[
+                        SkillStep(op=op) if op in {"search", "open", "find"} else SkillStep(op="search")
+                        for op in abstraction.action_pattern
+                        if op in {"search", "open", "find"}
+                    ]
+                    or [SkillStep(op="search", query_template="{query}"), SkillStep(op="open")],
+                    provenance=[experience.experience_id],
+                    executable=False,
+                )
             self.skills.create(skill)
             if self.logger:
-                self.logger.emit("SKILL_CREATED", {"skill_id": skill.skill_id})
+                self.logger.emit("SKILL_CREATED", {"skill_id": skill.skill_id, "executable": skill.executable})
             info["status"] = "skill_created"
             info["skill_id"] = skill.skill_id
+            info["executable"] = skill.executable
         elif carrier == Carrier.HARNESS:
             if not self.enable_harness:
                 info["status"] = "harness_disabled"
@@ -108,7 +122,7 @@ class CarrierRuntime:
             if self.weights is None:
                 raise RuntimeError("weight updater is not attached")
             batch = verified_batch or [experience]
-            summary = self.weights.train(batch, steps=min(20, max(5, len(batch) * 2)))
+            summary = self.weights.train(batch, epochs=2, lr=5e-5, lora_rank=8)
             self.state.adapter_path = summary["adapter_dir"]
             self.state.write_manifest()
             if self.logger:
@@ -132,3 +146,27 @@ def _harness_patch_from_experience(experience: Experience) -> dict[str, Any]:
         patch["evidence_checkpoint"] = True
         patch["min_evidence_before_answer"] = 1
     return patch
+
+
+def _executable_skill_from_experience(experience: Experience, abstraction: ExperienceAbstraction) -> Skill:
+    cap = experience.capability or ""
+    template = {
+        "multi_hop": skill_a_multihop,
+        "query_decomposition": skill_a_multihop,
+        "temporal_reasoning": skill_b_temporal,
+        "cross_document_synthesis": skill_c_crossdoc,
+    }.get(cap)
+    if template is None:
+        return Skill(
+            name=f"skill_{cap or 'gen'}_{experience.task_id}",
+            capability=cap or None,
+            preconditions=abstraction.preconditions,
+            procedure=[SkillStep(op="search", query_template="{query}"), SkillStep(op="open")],
+            provenance=[experience.experience_id],
+            executable=False,
+        )
+    skill = template()
+    skill.provenance = [experience.experience_id, *(skill.provenance or [])]
+    if abstraction.correction:
+        skill.failure_recovery = abstraction.correction
+    return skill

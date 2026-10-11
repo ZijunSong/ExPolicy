@@ -1,0 +1,20 @@
+stage: all-prepolicy
+gpus: "4,5,6,7"
+suite: data/r7_search_suite
+out: outputs/r7_policy_generalization
+budget: 48
+checkpoints: [0, 8, 16, 24, 32, 40, 48]
+seeds: [0, 1, 2]
+per_dataset: 80
+assimilator: content_skill
+methods: [passive, ace_skill, legacy_frontier, coverage, exact_utility]
+watchdog: true
+stall_seconds: 900
+max_restarts: 8
+forbid_silent_quantization: true
+thresholds:
+  content_std: 0.03
+  content_range: 0.08
+  H_skill: 0.05
+  H_policy: 0.03
+  H_carrier: 0.03

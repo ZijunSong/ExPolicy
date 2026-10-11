@@ -9,6 +9,8 @@ __pycache__/
 htmlcov/
 outputs/
 data/world/
+data/wiki18/
+data/public_search/
 *.pt
 *.bin
 *.safetensors

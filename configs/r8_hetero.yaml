@@ -1,0 +1,21 @@
+# R8 heterogeneous backend validation (frozen after split hash).
+model:
+  path: /data/ppnm/models/Qwen2.5-3B-Instruct
+  name: Qwen2.5-3B-Instruct
+  frozen: true
+split:
+  seed: 20260821
+  path: outputs/r8_backend_validation/split
+backend:
+  memrl_sections: 2
+  skillopt_epochs: 2
+  batch_size: 8
+  max_steps: 50
+  gpus: [4, 5, 6, 7]
+  vllm_port: 18090
+  embed_port: 18091
+gates:
+  foundation_min: 0.10
+  foundation_max: 0.70
+  family_gain_min: 0.05
+  oracle_vs_fixed_min: 0.03
