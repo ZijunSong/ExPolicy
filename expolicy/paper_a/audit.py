@@ -20,7 +20,7 @@ from expolicy.paper_a.constants import (
     RETENTION,
     SHADOW,
 )
-from expolicy.paper_a.stats import normal_mean_ci
+from expolicy.paper_a.stats import interval_claim, normal_mean_ci
 from expolicy.r9_lab.assimilators.discard import apply_discard
 from expolicy.r9_lab.assimilators.episodic import format_episodic_injection, retrieve_episodic
 from expolicy.r9_lab.assimilators.semantic import format_semantic_injection, retrieve_semantic
@@ -396,7 +396,35 @@ def audit_noop(
     report.reasons.extend(extra["reasons"])
     report.randomness_located = extra["randomness_located"]
     report.penalty["equivalence"] = extra["equivalence"]
+    report.penalty["stratified"] = stratified_paired_summary(report.task_rows)
+    report.penalty["variation_observed"] = bool(extra.get("variation_observed"))
+    report.penalty["stage_status"] = extra.get("stage_status")
     return report
+
+
+def stratified_paired_summary(task_rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Branch × probe-type × repeat means. Repeats are not multiplied into n."""
+    groups: dict[tuple, list[float]] = {}
+    for row in task_rows:
+        if "paired_delta" not in row:
+            continue
+        key = (row.get("mode"), row.get("repeat_id"), row.get("branch"), row.get("eval_split"))
+        groups.setdefault(key, []).append(float(row["paired_delta"]))
+    out = []
+    for key, vals in sorted(groups.items(), key=lambda item: tuple(str(part) for part in item[0])):
+        out.append(
+            {
+                "mode": key[0],
+                "repeat_id": key[1],
+                "branch": key[2],
+                "eval_split": key[3],
+                "n": len(vals),
+                "n_pos": sum(1 for value in vals if value > 0),
+                "n_neg": sum(1 for value in vals if value < 0),
+                "mean": (sum(vals) / len(vals)) if vals else None,
+            }
+        )
+    return out
 
 
 def _evaluator_supports_concurrency(evaluate: Evaluator) -> bool:
@@ -439,7 +467,9 @@ def _decide_status(
         "bound": equivalence,
         "n_pairs": int(averaged.size),
         "serial_deterministic": serial_identical,
-        "note": "n_pairs is the number of tasks. The two no-op branches are averaged within a task, and repeats are not extra samples",
+        "paired_deltas_identical": serial_identical,
+        "interval_claim": interval_claim(averaged.tolist()),
+        "note": "n_pairs is the number of tasks. The two no-op branches are averaged within a task, and repeats are not extra samples. A zero-width normal interval is not a population-noise claim.",
     }
     if serial_identical and serial_zero:
         serial_status = AUDIT_PASS
@@ -447,7 +477,7 @@ def _decide_status(
         extra["reasons"].append("deterministic serial replay produced a nonzero no-op success difference")
         return AUDIT_FAIL, extra
     else:
-        extra["randomness_located"] = "serial_repeat_noise"
+        extra["variation_observed"] = True
         if hi < -equivalence or lo > equivalence:
             extra["reasons"].append("serial no-op difference sits outside the pre-registered equivalence interval")
             return AUDIT_FAIL, extra
@@ -469,9 +499,9 @@ def _decide_status(
         extra["randomness_located"] = extra["randomness_located"] or "none_observed"
         return AUDIT_PASS, extra
     if formal_concurrency > 1:
-        extra["randomness_located"] = "formal_concurrency"
+        extra["variation_observed"] = True
     elif not formal_identical:
-        extra["randomness_located"] = "repeat_noise_under_formal_concurrency"
+        extra["variation_observed"] = True
     formal_avg = np.mean(np.stack(formal, axis=0), axis=0)
     f_center, f_lo, f_hi = normal_mean_ci(formal_avg.tolist(), z=ci_z)
     extra["equivalence"]["formal"] = {
@@ -483,9 +513,15 @@ def _decide_status(
         extra["reasons"].append("formal replay is deterministic and the no-op scores still differ")
         return AUDIT_FAIL, extra
     if formal_identical and formal_zero and serial_status == AUDIT_PASS:
+        extra["stage_status"] = {"serial": serial_status, "formal_concurrency": AUDIT_PASS}
         return AUDIT_PASS, extra
-    if extra["randomness_located"] and f_lo >= -equivalence and f_hi <= equivalence and serial_status != AUDIT_FAIL:
+    # A later block must not promote an earlier inconclusive or failed block to PASS.
+    if serial_status == AUDIT_PASS and f_lo >= -equivalence and f_hi <= equivalence:
+        extra["stage_status"] = {"serial": serial_status, "formal_concurrency": AUDIT_PASS}
         return AUDIT_PASS, extra
+    if serial_status != AUDIT_PASS:
+        extra["stage_status"] = {"serial": serial_status, "formal_concurrency": AUDIT_INCONCLUSIVE}
+        extra["reasons"].append("an earlier replay block did not pass, so a later block cannot supply the global PASS")
     if f_hi < -equivalence or f_lo > equivalence:
         extra["reasons"].append("formal replay difference is outside the equivalence interval")
         return AUDIT_FAIL, extra

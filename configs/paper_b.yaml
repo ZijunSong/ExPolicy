@@ -1,0 +1,63 @@
+# B-v1 protocol lock. Thresholds come from the 2026-10-09 guidance and are not retuned after outcomes.
+# The local harness is a frozen search executor for developing the protocol. It is not an official test set.
+
+protocol_id: B-v1
+protocol_version: "2026-10-12"
+harness: local_search
+split_seed: 20261012
+
+model:
+  model_id: Qwen3-14B
+  dtype: bfloat16
+  thinking: false
+  temperature: 0.0
+  note: "新 Pilot 冻结这个 backbone。本配置的本地执行器不调用它。GPU 0-3 不占用。"
+
+inducer:
+  version: b-v1-contrast-1
+  temperature: 0.0
+  diverse_continuations: preregistered_two
+  note: "温度 0 不能产生多样续行时，训练期只执行事先登记的两条合法续行，并计入学习预算。"
+
+conditions: [B0, B1, B2, B3, B4, B5, M]
+
+budget:
+  max_tool_calls: 4
+  max_steps: 6
+  max_tokens: 2048
+  max_interventions: 2
+
+limits:
+  max_atoms: 3
+  max_rules: 8
+  max_rules_per_family: 2
+  max_candidates_per_batch: 4
+  max_revisions: 1
+
+decision:
+  min_gain: 0.03
+  retention_tolerance: 0.01
+  resolution_tasks: 2
+  alpha: 0.05
+  primary_alpha_correction: bonferroni_two_comparisons
+  bootstrap_replicates: 400
+  bootstrap_seed: 20261012
+  min_trigger: 0.05
+  max_illegal: 0.5
+  retune_after_outcomes: false
+
+profiles:
+  feasibility:
+    train: {entity_time_compare: 4, empty_retrieval_recovery: 4}
+    val: {entity_time_compare: 3, empty_retrieval_recovery: 3, retention_other: 2}
+    near: {entity_time_compare: 4, empty_retrieval_recovery: 4}
+    cross: {entity_time_compare: 4, empty_retrieval_recovery: 4}
+    retention: {retention_other: 6}
+    unrelated: {retention_other: 4}
+  pilot:
+    train: {entity_time_compare: 48, empty_retrieval_recovery: 48}
+    val: {entity_time_compare: 16, empty_retrieval_recovery: 16, retention_other: 16}
+    near: {entity_time_compare: 50, empty_retrieval_recovery: 50}
+    cross: {entity_time_compare: 50, empty_retrieval_recovery: 50}
+    retention: {retention_other: 100}
+    unrelated: {retention_other: 16}

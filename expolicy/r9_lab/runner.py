@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
@@ -47,6 +48,25 @@ class EpisodeResult:
         }
 
 
+_injection_token_cap: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "a_v11_injection_token_cap", default=None
+)
+
+
+def set_injection_token_cap(limit: int | None) -> None:
+    """A-v1.1 carrier cap. None keeps the historical uncapped injection."""
+    _injection_token_cap.set(limit)
+
+
+def _cap_injection(text: str) -> str:
+    limit = _injection_token_cap.get()
+    if not text or not limit or limit <= 0:
+        return text
+    # Character fallback when the actor tokenizer is not loaded in this process.
+    # 4 characters is a conservative stand-in for one token and never pads.
+    return text[: int(limit) * 4]
+
+
 def inject_state_prefix(state: PersistentState | None, instruction: str) -> str:
     if state is None:
         return ""
@@ -61,7 +81,7 @@ def inject_state_prefix(state: PersistentState | None, instruction: str) -> str:
         parts.append(s_text)
     if state.skill_markdown.strip():
         parts.append("Skill document:\n" + state.skill_markdown.strip())
-    return "\n\n".join(parts)
+    return _cap_injection("\n\n".join(parts))
 
 
 def build_messages(

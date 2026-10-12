@@ -15,7 +15,7 @@ from expolicy.r9_lab.assimilators.episodic import apply_episodic, retrieve_episo
 from expolicy.r9_lab.assimilators.semantic import apply_semantic, retrieve_semantic
 from expolicy.r9_lab.benchmark.split import load_split, records_in_bucket
 from expolicy.r9_lab.constants import LAB_SYSTEM_PROMPT
-from expolicy.r9_lab.io_util import read_json, sha256_json, write_json
+from expolicy.r9_lab.io_util import read_json, sha256_json, sha256_text, write_json
 from expolicy.r9_lab.matrix_runtime import apply_action
 from expolicy.r9_lab.state.clone import clone_state
 from expolicy.r9_lab.state.persistent_state import PersistentState
@@ -63,26 +63,46 @@ def load_capability(cfg: PaperAConfig) -> dict[str, dict[str, Any]]:
     return by_env
 
 
-def _tracing_client(inner: Any, *, seed: int, max_tokens: int) -> Any:
+def _tracing_client(inner: Any, *, seed: int, max_tokens: int, temperature: float = 0.0) -> Any:
     class _Client:
         thread_safe = False
 
         def __init__(self) -> None:
             self.calls: list[list[dict[str, Any]]] = []
+            self.steps: list[dict[str, Any]] = []
 
         def chat(self, messages: Sequence[Mapping[str, Any]], **kwargs: Any) -> Any:
-            self.calls.append([dict(message) for message in messages])
-            return inner.chat(messages, seed=seed, max_tokens=max_tokens, temperature=0.0)
+            copied = [dict(message) for message in messages]
+            self.calls.append(copied)
+            result = inner.chat(messages, seed=seed, max_tokens=max_tokens, temperature=temperature)
+            self.steps.append(
+                {
+                    "request_hash": sha256_json(copied),
+                    "response_hash": sha256_text(str(getattr(result, "text", "") or "")),
+                    "tool_hash": None,
+                }
+            )
+            return result
 
         def reset(self) -> None:
             self.calls = []
+            self.steps = []
 
     return _Client()
 
 
-def run_probes(lab: Any, client: Any, state: PersistentState, probes: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def run_probes(
+    lab: Any,
+    client: Any,
+    state: PersistentState,
+    probes: Sequence[Mapping[str, Any]],
+    *,
+    seed: int = 0,
+    max_tokens: int = 1024,
+    temperature: float = 0.0,
+) -> list[dict[str, Any]]:
     if not hasattr(client, "reset"):
-        client = _tracing_client(client, seed=0, max_tokens=1024)
+        client = _tracing_client(client, seed=seed, max_tokens=max_tokens, temperature=temperature)
     items = []
     for probe in probes:
         client.reset()
@@ -135,6 +155,8 @@ def run_probes(lab: Any, client: Any, state: PersistentState, probes: Sequence[M
                 "retrieval_order": {"episodic": episodic, "semantic": semantic},
                 "branch_name_in_prompt": "A_V1_BRANCH::" in blob,
                 "env_reset_id": str(probe.get("sample_index") or ""),
+                "steps": list(getattr(client, "steps", []) or []),
+                "reset_hash": sha256_text(instruction),
             }
         )
         if len(items) % 10 == 0:

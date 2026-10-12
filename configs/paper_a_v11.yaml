@@ -1,0 +1,66 @@
+# A-v1.1 pilot lock. Thresholds are pre-registered. Do not retune them from outcomes.
+protocol_id: A-v1.1-pilot
+protocol_version: "2026-10-12"
+source_commit: 7dd71d11cef9b7f4c0435fb86538c588748ed352
+
+model:
+  model_id: Q2
+  local_path: /data/ppnm/models/Qwen3-14B
+  dtype: bfloat16
+  thinking: false
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 1024
+  inference_seed: 0
+  served_name: qwen3-14b-r9
+  manifest_path: outputs/r9_lab/model_manifest.json
+  expect_manifest_content_hash: 54cf96633ac469b0518fa158a74b4659c618116ec0ac8bcc8c1e5e51739619a1
+
+split:
+  path: outputs/r9_lab/split.json
+  expect_seed: 20260822
+  expect_content_sha256: 63ca95237468378f5eb3a74df0875b23c38f00a2c4bf58200d4473df350bf989
+  expect_file_sha256: 6eec40c9112f49cc6a53c5ad29357e3c2873f63af175ee08d4995bfcb73b2fb8
+
+frozen_batches:
+  path: outputs/r9_lab/FROZEN_BATCHES.json
+  expect_sha256: 90e18920f75a3134d257cb58ad4477760bf675b3023bb0836f75eba73adeac8f
+  expect_n_batches: 36
+
+environments: [db, kg]
+actions: [DISCARD, EPISODIC_REPLAY, SEMANTIC_MEMORY]
+servers:
+  - {gpu: 0, port: 18102}
+  - {gpu: 3, port: 18113}
+  - {gpu: 4, port: 18114}
+  - {gpu: 5, port: 18115}
+  - {gpu: 6, port: 18116}
+  - {gpu: 7, port: 18117}
+
+pilot:
+  seed: 20261011
+  train_router: false
+  run_sequence: false
+  access_future_test: false
+  practical_gain_target: 0.03
+  retention_guardrail: 0.02
+  tie_break: [DISCARD, EPISODIC_REPLAY, SEMANTIC_MEMORY]
+  episode_cap: 3500
+  injection_token_cap: 2048
+  operator_version: a-v11-cap2048
+  n_discovery: 4
+  n_reserved: 2
+  smoke:
+    n_shadow: 8
+    n_retention: 8
+    repeats: 2
+  probes:
+    db: {selection_shadow: 27, selection_retention: 18}
+    kg: {selection_shadow: 21, selection_retention: 14}
+
+paths:
+  s0: outputs/r9_lab/matrix/_s0
+  acquire_root: outputs/r9_lab/matrix
+  legacy_audit: outputs/paper_a_v1/audit
+  output_root: outputs/paper_a_v11
+  run_id: pilot-20261012

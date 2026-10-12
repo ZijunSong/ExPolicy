@@ -349,10 +349,28 @@ def cmd_audit(cfg, *, execute: bool, approve_remaining: bool) -> int:
     return 0
 
 
+def _a_v1_measurement_gate(audit_root: Path) -> str | None:
+    reports = sorted(audit_root.rglob("report.json")) if audit_root.exists() else []
+    if not reports:
+        return "A-v1 matrix refused: measurement audit reports are missing"
+    blocked = []
+    for path in reports:
+        status = str(read_json(path).get("status"))
+        if status != "PASS":
+            blocked.append(f"{path.parent.name}:{status}")
+    if blocked:
+        return "A-v1 matrix refused because measurement is not passed: " + ", ".join(blocked)
+    return None
+
+
 def cmd_matrix(cfg, *, execute: bool, approve_remaining: bool) -> int:
     blocked = _require_execute("matrix", execute)
     if blocked is not None:
         return blocked
+    gate = _a_v1_measurement_gate(cfg.output_root() / "audit")
+    if gate:
+        print(gate)
+        return 2
     if not approve_remaining:
         print("matrix was not started. Run `audit --execute` first; it measures 20 episodes and writes BUDGET.json. Then re-run matrix with --execute --approve-remaining.")
         return 2
