@@ -1,0 +1,71 @@
+# C-v1 protocol lock. Thresholds are pre-registered from the 2026-10-09 guidance.
+# Loading this file rejects a drifted exploration rule, metric, or pilot set.
+# Public environments stay empty until a real C0 is registered. Two seeds of one
+# KG do not count as two environments. The synth harness is not a paper environment.
+
+protocol_id: C-v1
+guidance_date: "2026-10-09"
+protocol_version: "2026-10-13"
+
+metric:
+  name: g
+  retention_weight: 0.5
+  future_test_in_selection: false
+  primary_cost_axis: interaction
+
+c0:
+  min_gain: 0.03
+  retention_tolerance: 0.01
+
+c1:
+  pilot_states: 3
+  families: 4
+  batches_per_family: 2
+  tasks_per_batch: 4
+
+c2:
+  min_rows: 8
+  ridge_alpha: 1.0
+  ablation_margin: 0.02
+  group_keys: [sequence_id, source_template]
+
+exploration:
+  rule: epsilon
+  epsilon: 0.1
+  ucb_enabled: false
+
+label_route: offline_matrix_plus_online_calibration
+online_feedback_rounds: [2, 4, 6]
+eval_rounds: [0, 2, 4, 6]
+pilot_rounds: 6
+tasks_per_round: 4
+sequence_seeds_minimum: 3
+
+pilot_policies: [Uniform, Coverage, Best-static, Current-reward, M]
+# Registered so a run cannot silently add UCB or a second bandit and keep the winner.
+excluded_explorations: [ucb]
+
+gates:
+  min_aulc: 0.02
+  min_final_success: 0.02
+  retention_tolerance: 0.01
+  wide_interval: 0.05
+  resample_budget: 1
+
+assimilator:
+  # Executable harness F. Paper-B and episodic adapters are recorded, not certified.
+  active: synthetic_content
+  online_algorithm_edit: false
+  capacity:
+    max_entries: 256
+  resource_limits:
+    max_acquisition_episodes_per_sequence: 24
+    max_shadow_feedback_rounds: 3
+    max_teacher_tokens_per_apply: 0
+
+public_environments: []
+harness_environment: synth
+declared_envs: [db, os, kg, synth]
+
+outputs:
+  root: outputs/paper_c
