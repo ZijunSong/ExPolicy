@@ -13,13 +13,13 @@ from expolicy.paper_b.public_exec import (
     PublicTask,
     SearchClient,
     observable_features,
-    rewrite_query,
 )
 from expolicy.paper_b.v21_parse import ParsedAction, parse_action, query_has_protocol_tag
 from expolicy.paper_b.v21_score import SCORER_VERSION, score_answer
 from expolicy.r9_lab.io_util import sha256_text
 
 PARSER_VERSION = "b-v2.1-parser-1"
+RUNTIME_VERSION = "b-v2.2-runtime-1"
 SNIPPET_CHARS = 280
 OPEN_CHARS = 1200
 CORRECTION = (
@@ -153,11 +153,18 @@ def run_v21_episode(
     infra = "ok"
     if require_evidence and not str(evidence).strip():
         terminal = "EVIDENCE_MISSING"
-    prefix_hash = _replay_prefix(state, client, messages, steps, prefix_actions or [], top_k)
+    prefix_hash, mismatch = _replay_prefix(state, client, messages, steps, prefix_actions or [], top_k, budget)
+    if mismatch:
+        terminal = "OBSERVATION_MISMATCH"
+    rule_skips: list[dict[str, str]] = []
     try:
-        while terminal != "EVIDENCE_MISSING" and state.decision_steps < budget.max_decision_steps and state.completion_tokens < budget.max_completion_tokens:
+        while terminal not in {"EVIDENCE_MISSING", "OBSERVATION_MISMATCH"} and state.decision_steps < budget.max_decision_steps and state.completion_tokens < budget.max_completion_tokens:
+            if _prompt_too_large(messages, state, budget):
+                terminal = "PROMPT_BUDGET"
+                break
             if not evidence and rules:
-                fired = _try_rule(state, rules, client, budget, top_k, steps, task)
+                fired, skips = _try_rule(state, rules, client, budget, top_k, steps, messages)
+                rule_skips.extend(skips)
                 if fired:
                     rule_fires += 1
                     if state.answered:
@@ -166,6 +173,7 @@ def run_v21_episode(
                         terminal = "ANSWERED"
                         break
                     continue
+            request_hash = _request_hash(messages)
             result = model.generate(messages, temperature=temperature, max_new_tokens=max_new_tokens)
             state.model_calls += 1
             state.decision_steps += 1
@@ -213,14 +221,11 @@ def run_v21_episode(
                 terminal = "BUDGET"
                 steps.append(_step_log(len(steps), result, parsed, parsed.tool, parsed.arguments, "", "tool budget exhausted", messages))
                 break
+            features_before = observable_features(state, budget)
             sent, raw_tool, observation, leaked, missing = _execute(state, client, parsed, top_k)
             leaks += leaked
             open_missing += missing
-            state.tool_calls += 1
-            state.history.append({"tool": parsed.tool, "arguments": sent, "observation": observation[:1500]})
-            messages.append({"role": "assistant", "content": result.text})
-            messages.append({"role": "user", "content": observation})
-            steps.append(_step_log(len(steps), result, parsed, parsed.tool, sent, raw_tool, observation, messages))
+            _commit_tool(state, messages, steps, parsed, result, sent, raw_tool, observation, request_hash, budget, features_before)
         else:
             if terminal == "BUDGET" and state.answered:
                 terminal = "ANSWERED"
@@ -260,62 +265,124 @@ def run_v21_episode(
         corpus_hash=corpus_hash,
     )
     record["prefix_hash"] = prefix_hash
+    record["runtime_version"] = RUNTIME_VERSION
+    record["rule_skips"] = rule_skips
+    record["observation_mismatch"] = mismatch
     return record
 
 
-def _replay_prefix(state, client, messages, steps, prefix_actions: list[dict[str, Any]], top_k: int) -> str:
+def _request_hash(messages: list[dict[str, str]]) -> str:
+    return sha256_text(json.dumps(messages, ensure_ascii=False))
+
+
+def _prompt_too_large(messages: list[dict[str, str]], state: PublicState, budget: PublicBudget) -> bool:
+    estimate = sum(len(str(item.get("content") or "")) for item in messages) // 4
+    return estimate >= int(budget.max_prompt_tokens) or state.prompt_tokens >= int(budget.max_prompt_tokens)
+
+
+def _state_hash(state: PublicState, messages: list[dict[str, str]], budget: PublicBudget) -> str:
+    payload = {
+        "messages": messages,
+        "queries": state.queries,
+        "opened": state.opened,
+        "doc_ids": state.doc_ids,
+        "tool_calls": state.tool_calls,
+        "decision_steps": state.decision_steps,
+        "prompt_tokens": state.prompt_tokens,
+        "completion_tokens": state.completion_tokens,
+        "tool_left": max(0, budget.max_tool_calls - state.tool_calls),
+        "decision_left": max(0, budget.max_decision_steps - state.decision_steps),
+    }
+    return sha256_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _render_action(parsed: ParsedAction) -> str:
+    if parsed.tool == "search":
+        return f"<tool>search</tool><arg>{parsed.arguments.get('query', '')}</arg>"
+    if parsed.tool == "open":
+        return f"<tool>open</tool><arg>{parsed.arguments.get('document_id', '')}</arg>"
+    return f"<tool>{parsed.tool}</tool><arg>{json.dumps(parsed.arguments, ensure_ascii=False)}</arg>"
+
+
+def _commit_tool(state, messages, steps, parsed, result, sent, raw_tool, observation, request_hash, budget, features_before: dict[str, int] | None = None) -> None:
+    state.tool_calls += 1
+    state.history.append({"tool": parsed.tool, "arguments": sent, "observation": observation[:1500]})
+    text = result.text or _render_action(parsed)
+    messages.append({"role": "assistant", "content": text})
+    messages.append({"role": "user", "content": observation})
+    logged = _step_log(len(steps), result, parsed, parsed.tool, sent, raw_tool, observation, messages, request_hash=request_hash)
+    logged["state_hash"] = _state_hash(state, messages, budget)
+    logged["features_before"] = features_before or {}
+    steps.append(logged)
+
+
+def _replay_prefix(state, client, messages, steps, prefix_actions: list[dict[str, Any]], top_k: int, budget: PublicBudget) -> tuple[str, str]:
     if not prefix_actions:
-        return ""
+        return "", ""
+    mismatch = ""
     for step in prefix_actions:
         tool = str(step.get("canonical_action") or "")
+        state.prompt_tokens += int(step.get("prompt_tokens") or 0)
+        state.completion_tokens += int(step.get("completion_tokens") or 0)
         if tool not in {"search", "open", "find"}:
+            state.decision_steps += 1
+            messages.append({"role": "assistant", "content": str(step.get("model_output_raw") or "")})
+            if step.get("observation_sent_to_model"):
+                messages.append({"role": "user", "content": str(step.get("observation_sent_to_model"))})
             continue
         parsed = ParsedAction(True, tool, dict(step.get("tool_arguments_sent") or {}), "replay")
+        request_hash = _request_hash(messages)
+        features_before = observable_features(state, budget)
         sent, raw_tool, observation, _leaked, _missing = _execute(state, client, parsed, top_k)
-        state.tool_calls += 1
+        logged_obs = str(step.get("observation_sent_to_model") or "")
+        if logged_obs and observation[:2000] != logged_obs[:2000]:
+            mismatch = f"step {len(steps)} observation mismatch"
+            break
+        result = GenerationResult(text=str(step.get("model_output_raw") or ""), stop_reason="replay", prompt_tokens=int(step.get("prompt_tokens") or 0), completion_tokens=int(step.get("completion_tokens") or 0))
         state.decision_steps += 1
-        state.history.append({"tool": tool, "arguments": sent, "observation": observation[:1500]})
-        messages.append({"role": "assistant", "content": str(step.get("model_output_raw") or "")})
-        messages.append({"role": "user", "content": observation})
-        logged = _step_log(len(steps), GenerationResult(text=str(step.get("model_output_raw") or ""), stop_reason="replay"), parsed, tool, sent, raw_tool, observation, messages)
-        logged["replayed"] = True
-        steps.append(logged)
+        _commit_tool(state, messages, steps, parsed, result, sent, raw_tool, observation, request_hash, budget, features_before)
+        steps[-1]["replayed"] = True
     payload = [
         {"tool": step.get("canonical_action"), "arguments": step.get("tool_arguments_sent")}
         for step in prefix_actions
         if step.get("canonical_action") in {"search", "open", "find"}
     ]
-    return sha256_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return sha256_text(json.dumps(payload, ensure_ascii=False, sort_keys=True)), mismatch
 
 
-def _try_rule(state, rules, client, budget, top_k, steps, task) -> bool:
+def _try_rule(state, rules, client, budget, top_k, steps, messages) -> tuple[bool, list[dict[str, str]]]:
     from expolicy.paper_b.features import trigger_matches
+    from expolicy.paper_b.public_exec import _rule_action
 
+    skips: list[dict[str, str]] = []
     if state.interventions >= budget.max_interventions or state.tool_calls >= budget.max_tool_calls:
-        return False
+        return False, skips
     features = observable_features(state, budget)
     matching = [rule for rule in rules if trigger_matches(rule.trigger, features, max_atoms=3)]
     matching.sort(key=lambda rule: (-len(rule.trigger.get("all") or []), rule.rule_id))
     for rule in matching:
-        if rule.action_template != "rewrite_query":
+        if rule.action_template not in {"rewrite_query", "open_top"}:
+            skips.append({"rule_id": rule.rule_id, "reason": "template_not_in_catalog"})
             continue
-        strategy = str(rule.parameters.get("strategy") or "")
         try:
-            query = rewrite_query(strategy, state.question, state.queries, state.opened_text)
-        except ValueError:
+            tool, arguments = _rule_action(rule, state)
+        except ValueError as exc:
+            skips.append({"rule_id": rule.rule_id, "reason": str(exc)})
             continue
-        if query_has_protocol_tag(query):
+        if tool == "search" and query_has_protocol_tag(str(arguments.get("query") or "")):
+            skips.append({"rule_id": rule.rule_id, "reason": "protocol_tag"})
             continue
-        parsed = ParsedAction(True, "search", {"query": query, "strategy": strategy}, "rule")
-        fake = GenerationResult(text="", stop_reason="rule")
+        parsed = ParsedAction(True, tool, arguments, "rule")
+        request_hash = _request_hash(messages)
+        features_before = observable_features(state, budget)
         sent, raw_tool, observation, _leaked, _missing = _execute(state, client, parsed, top_k)
-        state.tool_calls += 1
         state.interventions += 1
         state.decision_steps += 1
-        state.history.append({"tool": "search", "arguments": sent, "observation": observation[:1500]})
-        steps.append(_step_log(len(steps), fake, parsed, "search", sent, raw_tool, observation, []))
-        return True
-    return False
+        fake = GenerationResult(text=_render_action(parsed), stop_reason="rule")
+        _commit_tool(state, messages, steps, parsed, fake, sent, raw_tool, observation, request_hash, budget, features_before)
+        steps[-1]["source"] = f"rule:{rule.rule_id}"
+        return True, skips
+    return False, skips
 
 
 def _execute(state: PublicState, client: SearchClient, parsed: ParsedAction, top_k: int):
@@ -375,20 +442,20 @@ def _format_hits(hits: list[dict[str, Any]]) -> str:
     return "\n\n".join(lines) if lines else "no hits"
 
 
-def _step_log(index, result: GenerationResult, parsed: ParsedAction, tool, sent, raw_tool, observation, messages) -> dict[str, Any]:
-    request = json.dumps(messages, ensure_ascii=False) if messages else ""
+def _step_log(index, result: GenerationResult, parsed: ParsedAction, tool, sent, raw_tool, observation, messages, request_hash: str = "") -> dict[str, Any]:
+    request = request_hash or (sha256_text(json.dumps(messages, ensure_ascii=False)) if messages else "")
     return {
         "step": index,
         "model_output_raw": result.text,
         "finish_reason": result.stop_reason,
-        "request_hash": sha256_text(request),
+        "request_hash": request,
         "response_hash": sha256_text(result.text or ""),
         "parse_status": "ok" if parsed.ok else parsed.reason,
         "schema_valid": parsed.ok,
         "canonical_action": parsed.tool if parsed.ok else "",
         "tool_arguments_sent": sent,
         "tool_result_raw": raw_tool[:4000] if isinstance(raw_tool, str) else raw_tool,
-        "observation_sent_to_model": observation[:2000],
+        "observation_sent_to_model": observation,
         "prompt_tokens": result.prompt_tokens,
         "completion_tokens": result.completion_tokens,
     }

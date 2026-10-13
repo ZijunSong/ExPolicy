@@ -177,7 +177,7 @@ def _decision(audit: dict[str, Any]) -> dict[str, Any]:
     if audit["calibration_em"] < 8:
         reasons.append(
             f"已知证据诊断的官方 EM 是 {audit['calibration_em']}/{audit['calibration_n']}，没有达到建议的 8。"
-            "答案都已保存并可复判；未达标来自近义 span，不是合法输出被丢弃。"
+            "分数保留原值。近义、粒度、事实和格式原因只能来自逐题审计，不能由这段判断自动生成。"
         )
     if not measurement:
         reasons.append("执行器验收没有通过，不能把分数解释成经验规则无效或模型能力结论。")
