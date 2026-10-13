@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -34,6 +34,7 @@ class AcquisitionView:
     remaining: Mapping[str, int]
     features_by_family: Mapping[str, Mapping[str, Any]]
     pool_hash: str
+    family_rank: Mapping[str, int] = field(default_factory=dict)
 
     def __getattr__(self, name: str) -> Any:
         if "future" in name or name in {"utility", "gain_target", "shadow_after", "y_after", "future_score_offline"}:
@@ -70,7 +71,14 @@ class CoveragePolicy:
         self.history = AcquisitionHistory()
 
     def select(self, view: AcquisitionView) -> str:
-        return min(_available(view), key=lambda family: (self.history.stats(family).n, family))
+        return min(
+            _available(view),
+            key=lambda family: (
+                self.history.stats(family).n,
+                int(view.family_rank.get(family, 10**9)),
+                family,
+            ),
+        )
 
     def observe_outcome(self, family: str, success: float) -> None:
         self.history.observe(family, success)

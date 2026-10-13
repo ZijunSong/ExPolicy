@@ -1,0 +1,88 @@
+# C-v1.1-public. Does not retune or replace the C-v1 harness lock.
+# A single-environment pilot is legal. A paper claim still requires two environments.
+# Thresholds below were frozen before any public KG score from this protocol.
+
+protocol_id: C-v1.1-public
+parent_protocol: C-v1
+parent_commit: c1098c326c4e7298dfbe29cae11ce84f1faaf668
+mode: public_pilot
+guidance_date: "2026-10-13"
+
+registered_environments: [kg, os]
+active_environment: kg
+paper_requires_two_environments: true
+
+actor:
+  model_id: Q2
+  served_name: qwen3-14b-r9
+  base_url: http://127.0.0.1:18114/v1
+  thinking: false
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 1024
+
+assimilator:
+  name: episodic_e0
+  version: e0-episodic-1
+  top_k: 4
+  max_entries: 256
+  eviction: fifo
+  # Character stand-in for the frozen 2048-token injection budget.
+  # This process does not load the actor tokenizer, so the cap is not an exact token count.
+  injection_token_budget: 2048
+  injection_char_cap: 8192
+  char_cap_is_exact_tokens: false
+  semantic_enabled: false
+  skill_enabled: false
+  online_algorithm_edit: false
+
+metric:
+  retention_weight: 0.5
+  min_content_gain: 0.03
+  min_aulc: 0.02
+  final_noninferiority: -0.01
+  retention_tolerance: 0.01
+  primary_integral: trapezoid
+  sensitivity_integral: step
+  future_test_in_selection: false
+
+exploration:
+  rule: epsilon
+  epsilon: 0.1
+  ucb_enabled: false
+
+c2:
+  ridge_alpha: 1.0
+  min_rows: 8
+  unseen_family_required_for_pilot: false
+
+stages:
+  runtime:
+    cap_episodes: 64
+  c0_screen:
+    sequences: 3
+    acquisition_per_sequence: 16
+    shadow_n: 48
+    retention_n: 24
+    cap_episodes: 1200
+  c0_confirm:
+    cap_episodes: 3200
+  c1:
+    cap_episodes: 2000
+  c2:
+    cap_episodes: 1400
+  pilot:
+    cap_episodes: 1200
+    panel_b_cap: 48
+    feedback_round: 4
+  environment_cap: 10000
+  policy_tuning_cap: 6000
+
+split:
+  path: outputs/r9_lab/split.json
+  seed: 20261013
+  future_test_isolated: true
+  historical_probes_are_development_only: true
+
+outputs:
+  root: outputs/paper_c_public
