@@ -209,5 +209,5 @@ def test_empty_pair_is_not_a_validated_fragment_and_combos_do_not_add_tasks():
 
 
 def test_v22_pilot_does_not_call_the_old_episode_runner():
-    source = Path("/data/ppnm/expolicy/expolicy/paper_b/v22_pilot.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[2] / "expolicy" / "paper_b" / "v22_pilot.py").read_text(encoding="utf-8")
     assert "run_public_episode" not in source

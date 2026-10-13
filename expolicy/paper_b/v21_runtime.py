@@ -129,6 +129,8 @@ def run_v21_episode(
     top_k: int = 5,
     require_evidence: bool = False,
     prefix_actions: list[dict[str, Any]] | None = None,
+    opening_note: str = "",
+    forced_action: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     state = PublicState(question=task.question)
     messages: list[dict[str, str]] = [
@@ -156,6 +158,13 @@ def run_v21_episode(
     prefix_hash, mismatch = _replay_prefix(state, client, messages, steps, prefix_actions or [], top_k, budget)
     if mismatch:
         terminal = "OBSERVATION_MISMATCH"
+    base_state_hash = _state_hash(state, messages, budget)
+    policy_prompt_hash = base_state_hash
+    if opening_note and terminal != "OBSERVATION_MISMATCH":
+        messages.append({"role": "user", "content": opening_note})
+        policy_prompt_hash = _state_hash(state, messages, budget)
+    if forced_action and terminal != "OBSERVATION_MISMATCH":
+        _apply_forced(state, client, messages, steps, forced_action, top_k, budget)
     rule_skips: list[dict[str, str]] = []
     try:
         while terminal not in {"EVIDENCE_MISSING", "OBSERVATION_MISMATCH"} and state.decision_steps < budget.max_decision_steps and state.completion_tokens < budget.max_completion_tokens:
@@ -268,7 +277,25 @@ def run_v21_episode(
     record["runtime_version"] = RUNTIME_VERSION
     record["rule_skips"] = rule_skips
     record["observation_mismatch"] = mismatch
+    record["base_state_hash"] = base_state_hash
+    record["policy_prompt_hash"] = policy_prompt_hash
+    record["opening_note"] = opening_note
     return record
+
+
+def _apply_forced(state, client, messages, steps, action: dict[str, Any], top_k: int, budget: PublicBudget) -> None:
+    tool = str(action.get("tool") or "")
+    if tool not in {"search", "open"} or state.tool_calls >= budget.max_tool_calls:
+        return
+    arguments = {"query": str(action.get("query") or "")} if tool == "search" else {"document_id": str(action.get("document_id") or "")}
+    parsed = ParsedAction(True, tool, arguments, "reference")
+    request_hash = _request_hash(messages)
+    features_before = observable_features(state, budget)
+    sent, raw_tool, observation, _leaked, _missing = _execute(state, client, parsed, top_k)
+    state.decision_steps += 1
+    result = GenerationResult(text=_render_action(parsed), stop_reason="reference")
+    _commit_tool(state, messages, steps, parsed, result, sent, raw_tool, observation, request_hash, budget, features_before)
+    steps[-1]["source"] = "reference"
 
 
 def _request_hash(messages: list[dict[str, str]]) -> str:
