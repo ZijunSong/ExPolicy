@@ -299,7 +299,7 @@ def _replacement_probe(
     original = [execute_rules(task, rules, registry, budget=budget) for task in tasks]
     swapped = _swap_rewrite(rules)
     alternate = [execute_rules(task, swapped, registry, budget=budget) for task in tasks]
-    n_action = sum(left.action_templates != right.action_templates for left, right in zip(original, alternate, strict=True))
+    n_action = sum(_episode_signature(left) != _episode_signature(right) for left, right in zip(original, alternate, strict=True))
     n_success = sum(left.success != right.success for left, right in zip(original, alternate, strict=True))
     tokens = sum(episode.tokens for episode in original) + sum(episode.tokens for episode in alternate)
     return {
@@ -310,6 +310,13 @@ def _replacement_probe(
         "n_tasks": len(tasks),
         "used_only_development_tasks": True,
     }
+
+
+def _episode_signature(episode: Any) -> list[tuple[str, str]]:
+    signatures = []
+    for template, step in zip(episode.action_templates, episode.steps, strict=False):
+        signatures.append((template, sha256_json(step.parameters)))
+    return signatures
 
 
 def _swap_rewrite(rules: list[Rule]) -> list[Rule]:

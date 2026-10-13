@@ -1,0 +1,78 @@
+# B-v2. Does not replace configs/paper_b.yaml or the B-v1 decision files.
+# Thresholds below describe the next real-search round. They do not rewrite B-v1.
+
+protocol_id: B-v2
+harness: public_wikipedia_search
+
+model:
+  backend: openai_compat
+  name: qwen3-14b-r9
+  path: /data/ppnm/models/Qwen3-14B
+  base_url: http://127.0.0.1:18102/v1
+  base_urls:
+    - http://127.0.0.1:18114/v1
+    - http://127.0.0.1:18115/v1
+    - http://127.0.0.1:18116/v1
+    - http://127.0.0.1:18117/v1
+  api_key: EMPTY
+  thinking: false
+  deploy_temperature: 0.0
+  collect_temperature: 0.7
+  max_new_tokens: 256
+
+retriever:
+  base_url: http://127.0.0.1:18080
+  index: /data/ppnm/expolicy/data/wiki18/e5_HNSW64.index
+  corpus: /data/ppnm/expolicy/data/wiki18/corpus/wiki-18.unpacked.jsonl
+  e5_model: /data/ppnm/models/e5-base-v2
+  top_k: 5
+  device: cpu
+
+budget:
+  max_tool_calls: 8
+  max_decision_steps: 12
+  max_completion_tokens: 8192
+  max_interventions: 2
+  max_prompt_tokens: 32768
+
+# Frozen before any smoke score is read. Not selected by test accuracy.
+b1_rules:
+  - action_template: rewrite_query
+    parameters: {strategy: drop_redundant}
+    trigger:
+      all:
+        - {feature: search_count, op: gte, value: 1}
+        - {feature: new_evidence, op: eq, value: 0}
+        - {feature: repeat_query_count, op: gte, value: 1}
+  - action_template: rewrite_query
+    parameters: {strategy: entity_plus_relation}
+    trigger:
+      all:
+        - {feature: search_count, op: gte, value: 2}
+        - {feature: evidence_count, op: eq, value: 0}
+        - {feature: tool_budget_left, op: gte, value: 1}
+
+counts:
+  train: {recovery: 96}
+  val: {recovery: 32, retention: 16}
+  smoke: {recovery: 20}
+  dev: {recovery: 60, retention: 40}
+  # Held out. structural is intentionally empty until a second dependency structure exists.
+  confirmation_near: {recovery: 100}
+  confirmation_retention: {retention: 100}
+
+collection:
+  continuations_per_task: 2
+  min_fork_tasks: 8
+  supplement_episodes: 48
+  max_candidates: 8
+  snapshot_cap: 24
+  probe_snapshots: 8
+  bootstrap_cluster: hotpot_type_level
+
+decision:
+  min_gain: 0.03
+  retention_tolerance: 0.01
+  bootstrap_replicates: 5000
+  bootstrap_seed: 20261012
+  confirmation_opened: false

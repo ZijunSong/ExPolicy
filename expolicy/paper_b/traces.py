@@ -45,6 +45,32 @@ def _same_task_pairs(success: Trace, failure: Trace) -> list[TracePair]:
         right = failure.steps[index]
         if left.features_before != right.features_before:
             break
+        histories_differ = bool(left.history_hash and right.history_hash and left.history_hash != right.history_hash)
+        if histories_differ:
+            if left.action_template not in {TEMPLATE_BASE_SEARCH, TEMPLATE_BASE_ANSWER} and (
+                left.action_template != right.action_template or left.parameters != right.parameters
+            ):
+                emitted.append(
+                    TracePair(
+                        pair_id=f"feat:{success.trace_id}:{failure.trace_id}:{index}",
+                        alignment=ALIGNMENT_MATCHED,
+                        quality=0.5,
+                        task_id=success.task_id,
+                        source_group=success.source_group,
+                        family=success.family,
+                        diverge_index=index,
+                        features_before=dict(left.features_before),
+                        success_action=left.action_template,
+                        success_params=dict(left.parameters),
+                        failure_action=right.action_template,
+                        success_trace_id=success.trace_id,
+                        failure_trace_id=failure.trace_id,
+                        observation_redacted=left.observation_redacted,
+                        prefix_hash=left.history_hash,
+                        alignment_basis="features",
+                    )
+                )
+            break
         if left.action_template == right.action_template and left.parameters == right.parameters:
             continue
         if left.action_template in {TEMPLATE_BASE_SEARCH, TEMPLATE_BASE_ANSWER}:
@@ -67,6 +93,8 @@ def _same_task_pairs(success: Trace, failure: Trace) -> list[TracePair]:
                 success_trace_id=success.trace_id,
                 failure_trace_id=failure.trace_id,
                 observation_redacted=left.observation_redacted,
+                prefix_hash=left.history_hash or _feature_hash(left.features_before),
+                alignment_basis="history" if left.history_hash else "features",
             )
         )
         earlier_differs = True

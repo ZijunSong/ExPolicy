@@ -1,0 +1,60 @@
+# B-v2.1 runtime repair. Does not replace paper_b.yaml or paper_b_v2.yaml.
+protocol_id: B-v2
+parent_protocol: B-v2.1
+harness: public_wikipedia_search
+
+model:
+  backend: openai_compat
+  name: qwen3-14b-r9
+  path: /data/ppnm/models/Qwen3-14B
+  base_url: http://127.0.0.1:18114/v1
+  base_urls:
+    - http://127.0.0.1:18114/v1
+    - http://127.0.0.1:18115/v1
+    - http://127.0.0.1:18116/v1
+    - http://127.0.0.1:18117/v1
+  api_key: EMPTY
+  thinking: false
+  deploy_temperature: 0.0
+  collect_temperature: 0.7
+  max_new_tokens: 256
+
+retriever:
+  base_url: http://127.0.0.1:18080
+  index: /data/ppnm/expolicy/data/wiki18/e5_HNSW64.index
+  corpus: /data/ppnm/expolicy/data/wiki18/corpus/wiki-18.unpacked.jsonl
+  top_k: 5
+
+budget:
+  max_tool_calls: 8
+  max_decision_steps: 8
+  max_completion_tokens: 8192
+  max_interventions: 2
+  max_prompt_tokens: 32768
+
+b1_rules:
+  - action_template: rewrite_query
+    parameters: {strategy: drop_redundant}
+    trigger:
+      all:
+        - {feature: search_count, op: gte, value: 1}
+        - {feature: new_evidence, op: eq, value: 0}
+        - {feature: repeat_query_count, op: gte, value: 1}
+
+collection:
+  continuations_per_task: 2
+  min_fork_tasks: 8
+  supplement_episodes: 48
+  max_candidates: 4
+  snapshot_cap: 24
+  probe_snapshots: 8
+
+decision:
+  min_gain: 0.03
+  retention_tolerance: 0.01
+  bootstrap_replicates: 5000
+  bootstrap_seed: 20261013
+  confirmation_opened: false
+  min_b0_em: 4
+  min_calibration_em: 8
+  min_first_parse_rate: 0.98

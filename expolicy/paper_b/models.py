@@ -102,6 +102,8 @@ class TraceStep:
     action_template: str
     parameters: dict[str, Any]
     observation_redacted: str
+    history_hash: str = ""
+    snapshot_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +111,8 @@ class TraceStep:
             "action_template": self.action_template,
             "parameters": dict(self.parameters),
             "observation_redacted": self.observation_redacted,
+            "history_hash": self.history_hash,
+            "snapshot_hash": self.snapshot_hash,
         }
 
 
@@ -153,6 +157,8 @@ class TracePair:
     failure_trace_id: str
     observation_redacted: str = ""
     swapped_from: str = ""
+    prefix_hash: str = ""
+    alignment_basis: str = "features"
 
     def inducer_view(self) -> dict[str, Any]:
         """Alignment features and actions only. No answer, question, family, or task id."""
@@ -167,6 +173,8 @@ class TracePair:
             "failure_action": self.failure_action,
             "success_trace_id": self.success_trace_id,
             "failure_trace_id": self.failure_trace_id,
+            "prefix_hash": self.prefix_hash,
+            "alignment_basis": self.alignment_basis,
         }
 
     def to_dict(self) -> dict[str, Any]:

@@ -82,7 +82,8 @@ def token_cost(query: str, observation: str) -> int:
     return 8 + len(query) // 4 + len(observation) // 4
 
 
-def base_policy(state: AgentState) -> tuple[str, dict[str, Any]]:
+def base_policy(state: AgentState, text_context: str = "") -> tuple[str, dict[str, Any]]:
+    del text_context
     if state.search_count == 0:
         return TEMPLATE_BASE_SEARCH, {"query": state.question}
     extracted = extract_base_answer(state.last_observation)
@@ -91,7 +92,7 @@ def base_policy(state: AgentState) -> tuple[str, dict[str, Any]]:
     return TEMPLATE_BASE_ANSWER, {"answer": "unknown"}
 
 
-def exploration_policy(state: AgentState) -> tuple[str, dict[str, Any]]:
+def exploration_policy(state: AgentState, text_context: str = "") -> tuple[str, dict[str, Any]]:
     """Preregistered second continuation. It is data collection, not the inducer."""
     features = state.features()
     if features["has_comparison_cue"] == 1 and features["n_entities"] >= 2 and features["evidence_filled"] < features["n_entities"]:
@@ -100,7 +101,7 @@ def exploration_policy(state: AgentState) -> tuple[str, dict[str, Any]]:
         return TEMPLATE_REWRITE, {"rewrite_template": "{entity} biography"}
     if features["attribute_kind"] == "director" and features["search_count"] == 0:
         return TEMPLATE_SEARCH, {}
-    return base_policy(state)
+    return base_policy(state, text_context=text_context)
 
 
 def _charge(state: AgentState, query: str, observation: str, budget: Budget) -> None:
@@ -222,6 +223,13 @@ def _compare_years(state: AgentState) -> str:
     return dated[0][0]
 
 
+def _invoke_policy(decide: Policy, state: AgentState, text_context: str) -> tuple[str, dict[str, Any]]:
+    try:
+        return decide(state, text_context=text_context)
+    except TypeError:
+        return decide(state)
+
+
 def execute_rules(
     task: Task,
     rules: list[Rule],
@@ -232,7 +240,7 @@ def execute_rules(
     policy: Policy | None = None,
     score: bool = True,
 ) -> Episode:
-    """Run one episode. `text_context` is visible to a learned base agent; the frozen base ignores it."""
+    """Run one episode. Rules are tried first; the policy sees text_context when they do not apply."""
     limit = budget or registry.budget
     state = AgentState(question=task.question)
     env = SearchEnv(task)
@@ -254,7 +262,7 @@ def execute_rules(
             features = state.features()
             applied = ""
             applied_params: dict[str, Any] = {}
-            if policy is None and state.interventions < limit.max_interventions:
+            if state.interventions < limit.max_interventions:
                 matching = [rule for rule in rules if trigger_matches(rule.trigger, features, max_atoms=registry.max_atoms)]
                 matching.sort(key=lambda rule: (-len(rule.trigger.get("all") or []), rule.rule_id))
                 for rule in matching:
@@ -279,7 +287,7 @@ def execute_rules(
                     fire_features.append({"rule_id": rule.rule_id, "features": features, "task_id": task.task_id})
                     break
             if not applied:
-                template, params = decide(state)
+                template, params = _invoke_policy(decide, state, text_context)
                 apply_action(
                     state,
                     env,

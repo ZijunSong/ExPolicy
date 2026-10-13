@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Sequence
+from collections.abc import Sequence
 
 import httpx
 
@@ -34,6 +34,7 @@ class OpenAICompatBackend(ModelBackend):
         max_new_tokens: int = 256,
         temperature: float = 0.0,
         n: int = 1,
+        extra: dict | None = None,
     ) -> GenerationResult:
         url = f"{self.base_url}/chat/completions"
         payload = {
@@ -44,6 +45,8 @@ class OpenAICompatBackend(ModelBackend):
             "n": n,
             "logprobs": True,
         }
+        if extra:
+            payload.update(extra)
         started = time.perf_counter()
         try:
             response = httpx.post(

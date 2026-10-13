@@ -69,21 +69,32 @@ def _paired(
     right: str,
     splits: set[str],
 ) -> list[dict[str, Any]]:
-    by_condition: dict[str, dict[str, Mapping[str, Any]]] = {left: {}, right: {}}
+    by_condition: dict[str, dict[tuple[str, str, str], Mapping[str, Any]]] = {left: {}, right: {}}
     for row in rows:
         if row["condition"] in by_condition and row["split"] in splits:
-            by_condition[row["condition"]][str(row["task_id"])] = row
+            by_condition[row["condition"]][_row_identity(row)] = row
     paired = []
-    for task_id, lhs in sorted(by_condition[left].items()):
-        rhs = by_condition[right].get(task_id)
+    for identity, lhs in sorted(by_condition[left].items()):
+        rhs = by_condition[right].get(identity)
         if rhs is None:
             continue
         paired.append(
             {
-                "task_id": task_id,
+                "task_id": identity[0],
+                "experience_pool_id": identity[1],
+                "eval_seed": identity[2],
                 "diff": float(lhs["success"]) - float(rhs["success"]),
-                "group": str(lhs["source_group"]),
+                "group": str(lhs.get("cluster") or lhs["source_group"]),
                 "family": str(lhs["family"]),
             }
         )
     return paired
+
+
+def _row_identity(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Keep separate experience pools and eval seeds. One task id is not one sample."""
+    return (
+        str(row["task_id"]),
+        str(row.get("experience_pool_id") or ""),
+        str(row.get("eval_seed") if row.get("eval_seed") not in (None, "") else "0"),
+    )
