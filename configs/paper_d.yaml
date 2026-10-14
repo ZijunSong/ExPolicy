@@ -1,0 +1,16 @@
+# D-v1 protocol lock. Thresholds are the 2026-10-09 pre-registration.
+# Known-structure controls are not LifelongAgentBench gains.
+
+protocol_id: D-v1
+guidance_date: "2026-10-09"
+protocol_version: D-v1
+delta: 0.02
+retention_weight: 0.5
+retention_tolerance: 0.0
+weight_mode: macro
+alpha: 0.05
+count_repeats_as_new_tasks: false
+clip_negative_selection_gain: false
+inventory_roots:
+  - outputs/r9_lab
+  - outputs/r8_preflight
