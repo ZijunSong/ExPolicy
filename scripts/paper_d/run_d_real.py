@@ -8,15 +8,15 @@ import sys
 from pathlib import Path
 
 from expolicy.paper_d.constants import REPO_ROOT
-from expolicy.paper_d.persistent_ledger import PersistentLedger
 from expolicy.paper_d.real_config import load_real_config
-from expolicy.paper_d.real_dispatch import prepare_s0, run_jobs, vertical_jobs, write_json
+from expolicy.paper_d.real_dispatch import run_full_smoke, smoke_cells
 from expolicy.paper_d.real_execution import (
     RealExecutionRefused,
     execute_smoke,
     preflight,
     write_real_decision,
 )
+from expolicy.r9_lab.benchmark.split import load_split
 
 
 def main() -> None:
@@ -45,11 +45,28 @@ def main() -> None:
     smoke = {"status": "NOT_RUN", "episodes": 0}
     if args.command == "smoke":
         try:
-            smoke = execute_smoke(
-                config,
-                execute=args.execute,
-                runner=(lambda current: _run_vertical(current, args.output)) if args.execute else None,
-            )
+            if not args.execute:
+                split_path = Path(str(config["split_path"]))
+                if not split_path.is_absolute():
+                    split_path = REPO_ROOT / split_path
+                cells = smoke_cells(load_split(split_path))
+                args.output.mkdir(parents=True, exist_ok=True)
+                (args.output / "D_SMOKE_PLANNED_CELLS.jsonl").write_text(
+                    "".join(json.dumps({k: v for k, v in cell.items() if k != "instruction"}) + "\n" for cell in cells),
+                    encoding="utf-8",
+                )
+                smoke = {"status": "DRY_RUN", "episodes": 0, "planned": len(cells)}
+            else:
+                priors = [
+                    REPO_ROOT / "outputs" / "paper_d_real_v11" / "20261014-vertical" / "D_COST_LEDGER.sqlite",
+                    REPO_ROOT / "outputs" / "paper_d_real_v11" / "20261014-smoke-panel" / "D_COST_LEDGER.sqlite",
+                    REPO_ROOT / "outputs" / "paper_d_real_v11" / "trace-check" / "ledger.sqlite",
+                ]
+                smoke = execute_smoke(
+                    config,
+                    execute=True,
+                    runner=lambda current: run_full_smoke(current, args.output, prior_ledgers=priors),
+                )
         except RealExecutionRefused as exc:
             smoke = {"status": "REFUSED", "episodes": 0, "reason": str(exc)}
     elif args.command in {"operator", "matrix", "content", "prospective-train", "prospective-test"} and args.execute:
@@ -61,31 +78,6 @@ def main() -> None:
     print(f"command={args.command} preflight={report['status']} smoke={smoke['status']} episodes={smoke['episodes']}")
     if smoke["status"] in {"REFUSED", "BLOCKED"}:
         sys.exit(1)
-
-
-def _run_vertical(config: dict, output: Path) -> dict:
-    output.mkdir(parents=True, exist_ok=True)
-    state_hash = prepare_s0(output)
-    jobs = vertical_jobs(config, output, state_hash=state_hash)
-    write_json(output / "D_EXECUTION_MANIFEST.json", {"jobs": [{k: v for k, v in job.items() if k != "instruction_hint"} for job in jobs]})
-    ledger = PersistentLedger(output / "D_COST_LEDGER.sqlite", cap=int(config["pilot_episode_cap_all_inclusive"]))
-    artifacts = run_jobs(jobs, ledger=ledger, run_root=output)
-    ledger.close()
-    summary = output / "D_VERTICAL_INTEGRATION.md"
-    lines = ["# 纵向真实执行", "", "这些记录来自 OfficialLabEnv 和已核验的 Qwen 服务。答错仍算执行完成。", ""]
-    for row in artifacts:
-        job = row.get("job") or {}
-        lines.append(
-            f"- {job.get('env')} {job.get('branch')} task={job.get('task_id')} "
-            f"success={row.get('success')} calls={row.get('n_model_calls')} "
-            f"unchanged={row.get('state_unchanged')} cache={row.get('cache_hit')}"
-        )
-    summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return {
-        "episodes": len(artifacts),
-        "artifact_paths": [str((row.get("job") or {}).get("result_path") or "") for row in artifacts],
-        "successes": [bool(row.get("success")) for row in artifacts],
-    }
 
 
 if __name__ == "__main__":

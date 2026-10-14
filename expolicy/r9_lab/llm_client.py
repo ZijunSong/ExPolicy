@@ -82,6 +82,7 @@ class VLLMClient:
             body["extra_body"] = computed
             # vLLM OpenAI server also accepts chat_template_kwargs at top level via extra_body.
             body.update(computed)
+        self.last_wire_body = body
         url = self.base_url + "/chat/completions"
         try:
             resp = self._http.post(url, json=body)

@@ -308,6 +308,21 @@ def test_pending_interval_is_not_a_false_go_and_real_correlation_stays_off():
     assert overlap["rows"][0]["validation_status"] == "invalid"
 
 
+def test_full_smoke_plan_has_192_cells_per_environment():
+    import json
+    from pathlib import Path
+
+    from expolicy.paper_d.real_dispatch import smoke_cells
+    from expolicy.r9_lab.benchmark.split import load_split
+
+    payload = load_split(Path("outputs/r9_lab/split.json"))
+    cells = smoke_cells(payload)
+    assert len(cells) == 576
+    assert {cell["env"] for cell in cells} == {"db", "os", "kg"}
+    assert all(sum(1 for cell in cells if cell["env"] == env) == 192 for env in ("db", "os", "kg"))
+    assert json.loads(json.dumps(cells[0]))["sample_index"] == cells[0]["sample_index"]
+
+
 def test_ledger_survives_reopen_and_blocks_the_cap(tmp_path):
     from expolicy.paper_d.persistent_ledger import PersistentLedger
 

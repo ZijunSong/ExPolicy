@@ -57,6 +57,8 @@ class PersistentLedger:
             ).fetchone()
             if existing is not None:
                 self._db.execute("COMMIT")
+                if existing[0] != "RESERVED":
+                    raise ProtocolError("attempt cannot be restarted")
                 return True
             spent = self.spent()
             if spent + episodes > self.cap:
@@ -77,10 +79,28 @@ class PersistentLedger:
         return True
 
     def mark_started(self, attempt_id: str) -> None:
-        self._db.execute(
-            "UPDATE attempts SET state = 'STARTED', started_at = ? WHERE attempt_id = ?",
+        cursor = self._db.execute(
+            "UPDATE attempts SET state = 'STARTED', started_at = ? WHERE attempt_id = ? AND state = 'RESERVED'",
             (time.time(), attempt_id),
         )
+        if cursor.rowcount != 1:
+            raise ProtocolError("attempt cannot be restarted")
+
+    def import_historical(self, rows: list[tuple[str, str, str, int, int]]) -> None:
+        """Record already spent attempts from an earlier run. They stay inside the same cap."""
+        for attempt_id, logical_id, job_kind, episodes, tokens in rows:
+            existing = self._db.execute("SELECT 1 FROM attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
+            if existing:
+                continue
+            self._db.execute(
+                """
+                INSERT INTO attempts (
+                    attempt_id, logical_execution_id, job_kind, planned_episodes, state,
+                    reserved_at, finished_at, tokens
+                ) VALUES (?, ?, ?, ?, 'COMPLETED', ?, ?, ?)
+                """,
+                (attempt_id, logical_id, job_kind, episodes, time.time(), time.time(), tokens),
+            )
 
     def finish_attempt(self, attempt_id: str, *, tokens: int, tool_calls: int, result_hash: str) -> None:
         self._db.execute(

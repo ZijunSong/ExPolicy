@@ -15,7 +15,7 @@ from expolicy.r9_lab.io_util import sha256_json
 from expolicy.r9_lab.llm_client import VLLMClient
 from expolicy.r9_lab.state.persistent_state import PersistentState
 
-EXECUTION_REVISION = "d-v1.1-worker-1"
+EXECUTION_REVISION = "d-v1.1-worker-2"
 EXECUTION_SCHEMA = "d-real-attempt-1"
 
 
@@ -35,16 +35,6 @@ class FrozenTraceClient:
 
     def chat(self, messages: list[dict[str, Any]]) -> Any:
         extra = {"chat_template_kwargs": {"enable_thinking": False}}
-        body = {
-            "model": self.inner.model,
-            "temperature": self.temperature,
-            "top_p": self.top_p,
-            "max_tokens": self.max_tokens,
-            "seed": self.seed,
-            "extra_body": extra,
-            "top_k_policy": "omit_field_means_no_truncation",
-            "messages": list(messages),
-        }
         result = self.inner.chat(
             messages,
             temperature=self.temperature,
@@ -53,10 +43,12 @@ class FrozenTraceClient:
             seed=self.seed,
             extra_body=extra,
         )
+        wire = dict(getattr(self.inner, "last_wire_body", {}) or {})
         self.calls.append(
             {
-                "request": body,
-                "request_hash": sha256_json(body),
+                "request_wire": wire,
+                "request_wire_hash": sha256_json(wire),
+                "config_note": {"top_k": "not sent; omission is not proof of the server default"},
                 "content": result.content,
                 "reasoning": result.reasoning,
                 "finish_reason": (result.raw.get("choices") or [{}])[0].get("finish_reason"),
@@ -78,7 +70,15 @@ def execute_official_job(job: Mapping[str, Any], *, ledger: PersistentLedger, ru
     prior = ledger.completed_hash(str(job["logical_execution_id"]))
     if prior and result_path.is_file():
         cached = json.loads(result_path.read_text(encoding="utf-8"))
-        if cached.get("result_hash") == prior and cached.get("execution_complete") is True:
+        recomputed = sha256_json({key: value for key, value in cached.items() if key not in {"result_hash", "cache_hit"}})
+        same_job = cached.get("job", {}).get("logical_execution_id") == job["logical_execution_id"]
+        if (
+            recomputed == prior
+            and same_job
+            and cached.get("execution_complete") is True
+            and cached.get("infra_status") == "ok"
+            and cached.get("structural_status") == "ok"
+        ):
             cached["cache_hit"] = True
             return cached
     reserved = ledger.reserve_attempt(
@@ -97,6 +97,7 @@ def execute_official_job(job: Mapping[str, Any], *, ledger: PersistentLedger, ru
     lab = None
     try:
         lab = OfficialLabEnv(str(job["env"]))
+        lab.task = _TracingTask(lab.task)
         client = FrozenTraceClient(
             VLLMClient(port=int(job["port"]), model=str(job["served_name"])),
             temperature=float(job["temperature"]),
@@ -130,9 +131,12 @@ def execute_official_job(job: Mapping[str, Any], *, ledger: PersistentLedger, ru
             "state_hash_before": before_hash,
             "state_hash_after": after.content_hash(),
             "state_unchanged": before_hash == after.content_hash(),
+            "structural_status": "ok" if before_hash == after.content_hash() else "STRUCTURAL_INVALID",
             "n_model_calls": len(client.calls),
-            "initial_request_hash": None if not client.calls else client.calls[0]["request_hash"],
+            "n_environment_events": len(getattr(lab.task, "events", [])),
+            "initial_request_hash": None if not client.calls else client.calls[0]["request_wire_hash"],
             "request_trace": client.calls,
+            "environment_events": list(getattr(lab.task, "events", [])),
             "trajectory": list(result.trajectory),
         }
         artifact["result_hash"] = sha256_json(
@@ -165,6 +169,55 @@ def execute_official_job(job: Mapping[str, Any], *, ledger: PersistentLedger, ru
             lab.close()
 
 
+class _TracingTask:
+    """Record official environment messages without changing scores."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.events: list[dict[str, Any]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    def reset(self, session: Any) -> None:
+        self.inner.reset(session)
+        self.events.append({"phase": "reset", "messages": _history(session)})
+
+    def interact(self, session: Any) -> None:
+        before = len(_history(session))
+        self.inner.interact(session)
+        current = _history(session)
+        self.events.append({"phase": "interact", "new_messages": current[before:]})
+
+    def complete(self, session: Any) -> None:
+        self.inner.complete(session)
+        record = getattr(session, "evaluation_record", None)
+        self.events.append(
+            {
+                "phase": "complete",
+                "sample_status": str(getattr(session, "sample_status", "")),
+                "evaluation_outcome": str(getattr(record, "outcome", "")),
+            }
+        )
+
+    def release(self) -> None:
+        self.inner.release()
+
+
+def _history(session: Any) -> list[dict[str, str]]:
+    history = getattr(session, "chat_history", None)
+    values = []
+    if history is not None and hasattr(history, "model_dump"):
+        values = list((history.model_dump() or {}).get("value") or [])
+    items = []
+    for item in values:
+        if isinstance(item, dict):
+            items.append({"role": str(item.get("role", "")), "content": str(item.get("content") or "")})
+        else:
+            items.append({"role": str(getattr(item, "role", "")), "content": str(getattr(item, "content", "") or "")})
+    return items
+
+
 def _require_inside(root: Path, path: Path) -> Path:
     resolved = path.resolve()
     if root != resolved and root not in resolved.parents:
@@ -187,6 +240,6 @@ def _write_traces(directory: Path, artifact: Mapping[str, Any]) -> None:
         encoding="utf-8",
     )
     environment.write_text(
-        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in artifact["trajectory"]),
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in artifact.get("environment_events") or []),
         encoding="utf-8",
     )
