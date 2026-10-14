@@ -58,6 +58,7 @@ def build_task_level_matrix(rows: Sequence[Mapping[str, Any]]) -> list[dict[str,
 
 
 def cache_fingerprint(row: Mapping[str, Any]) -> str:
+    """Legacy fingerprint. Real reuse must use execution_cache_key."""
     payload = {
         "configuration_id": row.get("configuration_id"),
         "model_hash": row.get("model_hash"),
@@ -68,6 +69,80 @@ def cache_fingerprint(row: Mapping[str, Any]) -> str:
         "state_id": row.get("state_id") or row.get("state_distribution_id"),
     }
     return sha256_json(payload)
+
+
+def execution_cache_key(row: Mapping[str, Any]) -> str:
+    """Identity of one real execution. A cached_baseline flag is not this key."""
+    payload = {
+        "configuration_id": row.get("configuration_id"),
+        "model_hash": row.get("model_hash"),
+        "tokenizer_hash": row.get("tokenizer_hash"),
+        "tool_schema_hash": row.get("tool_schema_hash"),
+        "env_hash": row.get("env_hash"),
+        "inference_config_hash": row.get("inference_config_hash"),
+        "state_hash_before": row.get("state_hash_before") or row.get("state_id"),
+        "batch_hash": row.get("batch_hash") or row.get("batch_id"),
+        "task_id": row.get("task_id"),
+        "raw_task_hash": row.get("raw_task_hash"),
+        "action": row.get("action"),
+        "content_mode": row.get("content_mode"),
+        "probe_role": row.get("probe_role"),
+        "repeat_id": row.get("repeat_id"),
+    }
+    return sha256_json(payload)
+
+
+def charge_executions(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Bill each execution_id once. Repeating the id does not add cost; a new identity does."""
+    seen: set[str] = set()
+    total = 0.0
+    for row in rows:
+        execution_id = str(row.get("execution_id") or execution_cache_key(row))
+        if execution_id in seen:
+            continue
+        seen.add(execution_id)
+        total += float(row.get("cost") or 0.0)
+    return {"cost": total, "n_executions": len(seen)}
+
+
+def align_to_plan(
+    rows: Sequence[Mapping[str, Any]],
+    plan: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Reject a panel whose observed cells are not exactly the frozen plan."""
+    def key(item: Mapping[str, Any]) -> tuple[str, ...]:
+        return (
+            str(item.get("configuration_id")),
+            str(item.get("state_id") or item.get("state_distribution_id")),
+            str(item.get("batch_id")),
+            str(item.get("action")),
+            str(item.get("content_mode") or CONTENT_REAL),
+            str(item.get("probe_role")),
+            str(item.get("task_id")),
+            str(item.get("repeat_id")),
+        )
+
+    expected = [key(item) for item in plan]
+    observed = [key(item) for item in rows]
+    reasons: list[str] = []
+    if len(observed) != len(set(observed)):
+        reasons.append("duplicate primary key")
+    missing = set(expected) - set(observed)
+    extra = set(observed) - set(expected)
+    planned_actions = {item[3] for item in expected}
+    observed_actions = {item[3] for item in observed}
+    if planned_actions - observed_actions:
+        reasons.append("planned action column is missing")
+    elif missing:
+        reasons.append("planned cell is missing")
+    if extra:
+        reasons.append("observed cell is not in the plan")
+    planned_repeats = {(item[6], item[7]) for item in expected}
+    for task_id, repeat_id in {(item[6], item[7]) for item in observed}:
+        if any(item[6] == task_id for item in expected) and (task_id, repeat_id) not in planned_repeats:
+            reasons.append("repeat does not match the plan")
+            break
+    return {"valid": not reasons, "reasons": reasons, "n_missing": len(missing), "n_extra": len(extra)}
 
 
 def charge_cost(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -268,6 +343,11 @@ def _split_ok(
     return ok, failed
 
 
+def _probe_group(row: Mapping[str, Any]) -> str:
+    """Probe intervals use probe groups. Experience groups stay on the policy split."""
+    return str(row.get("probe_source_group") or row.get("source_group") or row.get("batch_id"))
+
+
 def _task_means(
     rows: Sequence[Mapping[str, Any]],
     before_key: str,
@@ -279,7 +359,7 @@ def _task_means(
         after = row.get(after_key)
         if before is None or after is None:
             raise ProtocolError("an ok probe row is missing its paired outcome")
-        pooled[str(row.get("task_id"))].append((float(before), float(after), str(row.get("source_group") or row.get("batch_id"))))
+        pooled[str(row.get("task_id"))].append((float(before), float(after), _probe_group(row)))
     means: dict[str, dict[str, Any]] = {}
     for task_id, pairs in pooled.items():
         group = pairs[0][2]

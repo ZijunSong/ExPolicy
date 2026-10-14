@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -242,6 +242,40 @@ def crossed_resample_means(
         "formal_inference": False,
         "formal_stop": False,
         "reason": "crossed resample is an approximate noise check",
+    }
+
+
+def finite_sample_guarantee_allowed(
+    *,
+    equal_groups: bool,
+    independence_declared: bool,
+    shared_history: bool,
+    shared_probe: bool,
+) -> bool:
+    """Equal group size does not create independence."""
+    return bool(equal_groups and independence_declared and not shared_history and not shared_probe)
+
+
+def refitting_bootstrap(
+    *,
+    n_boot: int,
+    seed: int,
+    select: Callable[[Mapping[str, Any]], Any],
+) -> dict[str, Any]:
+    """Each draw calls select again. A previously chosen action is not the resampled object."""
+    if n_boot < 1:
+        raise ProtocolError("bootstrap needs at least one draw")
+    rng = np.random.default_rng(seed)
+    actions = []
+    for draw in range(n_boot):
+        sample = {"draw": draw, "seed": int(rng.integers(0, 1_000_000))}
+        actions.append(select(sample))
+    return {
+        "n_refits": n_boot,
+        "actions": actions,
+        "approximate": True,
+        "formal_inference": False,
+        "formal_stop": False,
     }
 
 

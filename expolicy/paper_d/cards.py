@@ -13,8 +13,12 @@ from expolicy.paper_d.constants import (
     HETEROGENEOUS_BUT_UNPREDICTED,
     INCONCLUSIVE,
     LONG_TERM_UNCOVERED,
+    MEASUREMENT_INCONCLUSIVE,
     MEASUREMENT_INVALID,
+    NOT_TESTED,
+    OPERATOR_INVALID,
     PROTOCOL_VERSION,
+    RETENTION_UNCERTAIN,
     UPDATE_INEFFECTIVE,
     ProtocolError,
 )
@@ -36,6 +40,10 @@ def judge_configuration(
     content_real: float | None,
     content_control: float | None,
     delta: float = DELTA,
+    feature_gain_lower: float | None = None,
+    measurement_precision: str = "ok",
+    operator_invalid: bool = False,
+    retention_established: bool = False,
 ) -> dict[str, Any]:
     """Assign a primary status and every dimension status that also applies.
 
@@ -49,15 +57,27 @@ def judge_configuration(
         population_table=population_table,
         delta=delta,
     )
-    update_ineffective = bool(updates_rejected) or _all_updates_nonpositive(action_mean_upper)
-    content_unsupported = (
-        content_real is not None and content_control is not None and float(content_real) <= float(content_control)
+    update_ineffective = (not operator_invalid) and (
+        bool(updates_rejected) or _all_updates_nonpositive(action_mean_upper)
     )
-    feature_wins = feature_evaluated and feature_gain is not None and float(feature_gain) > float(delta)
-    env_fixed = within_upper is not None and float(within_upper) < float(delta)
+    content_tested = content_real is not None and content_control is not None
+    content_unsupported = False
+    if content_real is not None and content_control is not None:
+        content_unsupported = float(content_real) <= float(content_control)
+    point_signal = feature_evaluated and feature_gain is not None and float(feature_gain) > float(delta)
+    formal_interval = feature_gain_lower is not None and float(feature_gain_lower) > float(delta)
+    feature_wins = point_signal if population_table else point_signal and formal_interval
+    candidate_signal = (not population_table) and point_signal and not feature_wins
+    env_fixed = (
+        measurement_precision == "ok"
+        and within_upper is not None
+        and float(within_upper) < float(delta)
+    )
     dimensions: list[str] = []
     if not measurement_valid:
         dimensions.append(MEASUREMENT_INVALID)
+    elif measurement_precision == "inconclusive":
+        dimensions.append(MEASUREMENT_INCONCLUSIVE)
     else:
         if feature_wins:
             dimensions.append(ACTIONABLE_HEADROOM)
@@ -65,7 +85,9 @@ def judge_configuration(
             dimensions.append(HETEROGENEOUS_BUT_UNPREDICTED)
         if env_fixed:
             dimensions.append(ENV_FIXED_SUFFICIENT)
-        if update_ineffective:
+        if operator_invalid:
+            dimensions.append(OPERATOR_INVALID)
+        elif update_ineffective:
             dimensions.append(UPDATE_INEFFECTIVE)
         if content_unsupported:
             dimensions.append(CONTENT_UNSUPPORTED)
@@ -77,6 +99,7 @@ def judge_configuration(
                 ENV_FIXED_SUFFICIENT,
                 UPDATE_INEFFECTIVE,
                 CONTENT_UNSUPPORTED,
+                OPERATOR_INVALID,
             )
         ):
             dimensions.append(INCONCLUSIVE)
@@ -87,11 +110,19 @@ def judge_configuration(
         "dimension_detail": {
             "foundation": "not_used_as_a_filter",
             "update_efficacy": UPDATE_INEFFECTIVE if update_ineffective and measurement_valid else "not_flagged",
-            "content_contribution": CONTENT_UNSUPPORTED if content_unsupported and measurement_valid else "not_flagged",
-            "conditional_headroom": _headroom_label(measurement_valid, env_fixed, headroom_open),
-            "predictability_realization": _prediction_label(measurement_valid, feature_evaluated, feature_wins, headroom_open),
+            "content_contribution": CONTENT_UNSUPPORTED if content_unsupported else (NOT_TESTED if not content_tested else "not_flagged"),
+            "conditional_headroom": _headroom_label(measurement_valid and measurement_precision == "ok", env_fixed, headroom_open),
+            "predictability_realization": _prediction_label(
+                measurement_valid and measurement_precision == "ok",
+                feature_evaluated,
+                feature_wins,
+                headroom_open,
+            ),
+            "retention": "established" if retention_established else RETENTION_UNCERTAIN,
         },
-        "scientific_conclusion_allowed": measurement_valid and primary != MEASUREMENT_INVALID,
+        "candidate_signal": candidate_signal,
+        "evidence_level": "population_table" if population_table else "sample",
+        "scientific_conclusion_allowed": measurement_valid and primary not in {MEASUREMENT_INVALID, MEASUREMENT_INCONCLUSIVE},
         "long_term_covered": False,
         "limitation": LONG_TERM_UNCOVERED,
         "delta": delta,
@@ -160,6 +191,8 @@ def _all_updates_nonpositive(action_mean_upper: Mapping[str, float] | None) -> b
 def _primary(dimensions: Sequence[str]) -> str:
     order = (
         MEASUREMENT_INVALID,
+        MEASUREMENT_INCONCLUSIVE,
+        OPERATOR_INVALID,
         ACTIONABLE_HEADROOM,
         HETEROGENEOUS_BUT_UNPREDICTED,
         ENV_FIXED_SUFFICIENT,
@@ -201,6 +234,8 @@ def _prediction_label(
 def _conclusion(primary: str) -> str:
     text = {
         MEASUREMENT_INVALID: "暂无科学结论",
+        MEASUREMENT_INCONCLUSIVE: "链路未发现结构错误，但精度不足，不签发正式 GO 或 NO_GO",
+        OPERATOR_INVALID: "算子生成或执行失败，不能改写成空更新后继续",
         UPDATE_INEFFECTIVE: "当前算子不能有效学习",
         CONTENT_UNSUPPORTED: "内容贡献尚未建立",
         ENV_FIXED_SUFFICIENT: "在当前面板和精度下，环境内额外选择价值有限",

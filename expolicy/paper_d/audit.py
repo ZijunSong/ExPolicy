@@ -36,6 +36,8 @@ def audit_measurement(bundle: Mapping[str, Any], *, offset: float = NOOP_OFFSET)
     reasons.extend(_audit_infra(bundle))
     if "paired_rows" in bundle:
         reasons.extend(audit_paired_rows(bundle["paired_rows"], offset=offset))
+    if bundle.get("evidence_class") == "real":
+        reasons.extend(_real_resource_reasons(states))
     status = STATUS_OK if not reasons else MEASUREMENT_INVALID
     raw_shadow = _as_float(bundle.get("raw_shadow_delta"))
     legacy = _as_float(bundle.get("legacy_utility"))
@@ -56,7 +58,7 @@ def audit_measurement(bundle: Mapping[str, Any], *, offset: float = NOOP_OFFSET)
 
 
 def audit_paired_rows(rows: Sequence[Mapping[str, Any]], *, offset: float = NOOP_OFFSET) -> list[str]:
-    """BASE, DISCARD, and rejected-edit outcomes must share task ids, prompts, and model hashes."""
+    """Pair no-op branches per task. Different tasks may have different prompt hashes."""
     reasons: list[str] = []
     by_branch: dict[str, list[Mapping[str, Any]]] = {branch: [] for branch in NOOP_BRANCHES}
     for row in rows:
@@ -71,18 +73,60 @@ def audit_paired_rows(rows: Sequence[Mapping[str, Any]], *, offset: float = NOOP
     task_sets = [{str(row.get("task_id")) for row in by_branch[branch]} for branch in NOOP_BRANCHES]
     if any(item != task_sets[0] for item in task_sets):
         reasons.append("baseline task set differs across no-op branches")
-    hashes = {str(row.get("model_hash")) for branch in NOOP_BRANCHES for row in by_branch[branch]}
-    prompts = {str(row.get("prompt_hash")) for branch in NOOP_BRANCHES for row in by_branch[branch]}
-    if len(hashes) != 1:
-        reasons.append("model hash differs across paired no-op branches")
-    if len(prompts) != 1:
-        reasons.append("prompt hash differs across paired no-op branches")
+    grouped: dict[tuple[str, ...], dict[str, Mapping[str, Any]]] = {}
+    for branch in NOOP_BRANCHES:
+        for row in by_branch[branch]:
+            grouped.setdefault(_pair_key(row), {})[branch] = row
+    for key, branches in grouped.items():
+        if any(branch not in branches for branch in NOOP_BRANCHES):
+            reasons.append(f"incomplete no-op pair {key}")
+            continue
+        prompts = {str(branches[branch].get("prompt_hash")) for branch in NOOP_BRANCHES}
+        models = {str(branches[branch].get("model_hash")) for branch in NOOP_BRANCHES}
+        if len(prompts) != 1:
+            reasons.append(f"initial prompt differs across no-op branches for task {key[3]}")
+        if len(models) != 1:
+            reasons.append(f"model hash differs across no-op branches for task {key[3]}")
     base = {str(row["task_id"]): float(row["outcome"]) for row in by_branch["BASE"]}
     for branch in ("DISCARD", "REJECTED_EDIT"):
-        deltas = [float(row["outcome"]) - base[str(row["task_id"])] for row in by_branch[branch] if str(row["task_id"]) in base]
+        deltas = [
+            float(row["outcome"]) - base[str(row["task_id"])]
+            for row in by_branch[branch]
+            if str(row["task_id"]) in base and row.get("outcome") is not None
+        ]
         if deltas and abs(sum(deltas) / len(deltas)) > offset:
             reasons.append(f"unexplained raw no-op offset on {branch}")
     return reasons
+
+
+def _pair_key(row: Mapping[str, Any]) -> tuple[str, ...]:
+    return (
+        str(row.get("configuration_id") or ""),
+        str(row.get("state_id") or ""),
+        str(row.get("batch_id") or ""),
+        str(row.get("task_id")),
+        str(row.get("repeat_id") or "0"),
+    )
+
+
+def resource_isolation_failures(resource: Mapping[str, Any]) -> list[str]:
+    """A distinct clone name is not evidence that a writable resource was isolated."""
+    if resource.get("applicability") == "not_applicable":
+        if not resource.get("reason"):
+            return ["not_applicable resource is missing a reason"]
+        return []
+    if resource.get("mode") == "readonly":
+        missing = [
+            name
+            for name in ("version", "session_isolated")
+            if not resource.get(name)
+        ]
+        if missing:
+            return [f"readonly resource missing {missing}"]
+        return []
+    if resource.get("write_neighbor_restore_passed") is not True:
+        return ["writable resource has no write-neighbor-restore evidence"]
+    return []
 
 
 def valid_noop_bundle() -> dict[str, Any]:
@@ -208,6 +252,18 @@ def _audit_offset(bundle: Mapping[str, Any], offset: float) -> list[str]:
             reasons.append(f"{key} was not separated from the penalty")
         elif abs(value) > offset:
             reasons.append(f"unexplained fixed offset in {key}")
+    return reasons
+
+
+def _real_resource_reasons(states: Sequence[Mapping[str, Any]]) -> list[str]:
+    reasons: list[str] = []
+    for state in states:
+        for branch_name, branch in (state.get("branches") or {}).items():
+            resources = branch.get("resources") or {}
+            for name in CLONE_RESOURCES:
+                info = resources.get(name) or {}
+                for failure in resource_isolation_failures(info):
+                    reasons.append(f"{state.get('state_id')}:{branch_name}:{name}: {failure}")
     return reasons
 
 

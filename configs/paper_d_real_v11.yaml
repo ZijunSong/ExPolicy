@@ -1,0 +1,46 @@
+# D-v1.1 real pilot. Thresholds are not the D-v1 registration.
+# Paths below were read from this server's existing A-v1.1 / R9 manifests.
+protocol_version: D-v1.1
+base_commit: c489a21affcaed68d87dc8b49c91ee8854c90e86
+phase: real_development_pilot
+environments: [db, os, kg]
+model:
+  name: Qwen3-14B
+  model_id: Q2
+  local_path: /data/ppnm/models/Qwen3-14B
+  dtype: bfloat16
+  thinking: false
+  temperature: 0.0
+  top_p: 1.0
+  top_k: 0
+  max_tokens: 1024
+  inference_seed: 0
+  served_name: qwen3-14b-r9
+  manifest_path: outputs/r9_lab/model_manifest.json
+primary_actions: [DISCARD, EPISODIC_REPLAY, SEMANTIC_MEMORY]
+skillopt_role: auxiliary_operator_audit
+states: [S0, S_history]
+experience_batch_size: 8
+development_batches_per_env: 4
+future_tasks_per_x: 16
+retention_tasks_per_x: 16
+main_repeats: 1
+delta: 0.02
+retention_weight: 0.5
+retention_tolerance: 0.0
+weight_mode: macro
+measurement_kind: sample
+allow_population: false
+max_infra_retries: 2
+pilot_episode_cap_all_inclusive: 6000
+formal_claim_from_pilot: false
+report_correlation: false
+split_path: outputs/r9_lab/split.json
+frozen_batches_path: outputs/r9_lab/FROZEN_BATCHES.json
+servers:
+  - {gpu: 0, port: 18102}
+  - {gpu: 3, port: 18113}
+  - {gpu: 4, port: 18114}
+  - {gpu: 5, port: 18115}
+  - {gpu: 6, port: 18116}
+  - {gpu: 7, port: 18117}

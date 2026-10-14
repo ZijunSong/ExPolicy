@@ -54,7 +54,7 @@ def fit_simple_observable_policy(
     for record in records:
         assert_predecision_features(record.get("features") or {}, envs)
         _require_split_utilities(record)
-    groups = sorted({str(record["source_group"]) for record in records})
+    groups = sorted({_fold_id(record) for record in records})
     result: dict[str, Any] = {
         "estimate_name": ESTIMATE_POLICY,
         "valid": False,
@@ -90,7 +90,9 @@ def fit_simple_observable_policy(
         "state_only": _arm(records, [name for name in names if name in STATE_FEATURES], groups, weight_mode),
         "global_fixed": full["global_fixed_vs_env_fixed"],
         "env_fixed": 0.0,
+        "env_state_fixed": full["env_state_vs_env_fixed"],
     }
+    result["gain_vs_env_state"] = full["gain_vs_env_state"]
     return result
 
 
@@ -114,18 +116,21 @@ def _cross_validated(
     per_unit: list[dict[str, Any]] = []
     splits: list[dict[str, list[str]]] = []
     for test_group in groups:
-        train_groups = [group for group in groups if group != test_group]
+        train_groups = [group for group in groups if group != str(test_group)]
         if set(train_groups) & {test_group}:
             raise ProtocolError("outer split leaked the test group")
         choice = _select_hyperparams(records, train_groups, names)
         model = _fit_model(records, train_groups, names, choice)
         env_fixed = _env_fixed_actions(records, train_groups)
         global_fixed, _tie = _best_action(_mean_utilities(records, train_groups))
-        test_rows = [record for record in records if str(record["source_group"]) == test_group]
+        env_state = _env_state_actions(records, train_groups)
+        test_rows = [record for record in records if _fold_id(record) == test_group]
         for record in test_rows:
             action = model.predict(record["features"], names)
             evaluation = record["evaluation_utilities"]
             env_action = env_fixed[str(record["env"])]
+            state_key = (str(record["env"]), str(record.get("state_id") or "unspecified"))
+            state_action = env_state[state_key]
             per_unit.append(
                 {
                     "unit_id": str(record["unit_id"]),
@@ -133,18 +138,23 @@ def _cross_validated(
                     "action": action,
                     "utility": float(evaluation[action]),
                     "env_fixed_utility": float(evaluation[env_action]),
+                    "env_state_utility": float(evaluation[state_action]),
                     "global_fixed_utility": float(evaluation[global_fixed]),
                     "oracle_action": _best_action(evaluation)[0],
                 }
             )
         splits.append({"train": list(train_groups), "test": [str(test_group)]})
     gains = {row["unit_id"]: row["utility"] - row["env_fixed_utility"] for row in per_unit}
+    versus_state = {row["unit_id"]: row["utility"] - row["env_state_utility"] for row in per_unit}
+    state_versus_env = {row["unit_id"]: row["env_state_utility"] - row["env_fixed_utility"] for row in per_unit}
     global_vs_env = {row["unit_id"]: row["global_fixed_utility"] - row["env_fixed_utility"] for row in per_unit}
     envs = {row["unit_id"]: row["env"] for row in per_unit}
     negative = [row["utility"] < row["env_fixed_utility"] - 1e-12 for row in per_unit]
     accurate = [row["action"] == row["oracle_action"] for row in per_unit]
     return {
         "gain_vs_env_fixed": _weighted(gains, envs, weight_mode),
+        "gain_vs_env_state": _weighted(versus_state, envs, weight_mode),
+        "env_state_vs_env_fixed": _weighted(state_versus_env, envs, weight_mode),
         "global_fixed_vs_env_fixed": _weighted(global_vs_env, envs, weight_mode),
         "negative_transfer_rate": float(sum(negative) / len(negative)),
         "accuracy": float(sum(accurate) / len(accurate)),
@@ -174,7 +184,7 @@ def _select_hyperparams(
             inner = [group for group in train_groups if group != val_group]
             model = _fit_model(records, inner, names, (kind, param))
             for record in records:
-                if str(record["source_group"]) != val_group:
+                if _fold_id(record) != val_group:
                     continue
                 action = model.predict(record["features"], names)
                 scores.append(float(record["selection_utilities"][action]))
@@ -202,7 +212,7 @@ def _fit_model(
     names: Sequence[str],
     choice: tuple[str, float],
 ) -> _ActionModel:
-    train = [record for record in records if str(record["source_group"]) in set(groups)]
+    train = [record for record in records if _fold_id(record) in set(groups)]
     if len(train) < 2:
         raise ProtocolError("inner training fold has fewer than two units")
     actions = sorted(train[0]["selection_utilities"])
@@ -250,22 +260,50 @@ def _env_fixed_actions(records: Sequence[Mapping[str, Any]], groups: Sequence[st
     by_env: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     allowed = set(groups)
     for record in records:
-        if str(record["source_group"]) in allowed:
+        if _fold_id(record) in allowed:
             by_env[str(record["env"])].append(record)
     for env, members in by_env.items():
-        means = _mean_utilities(members, [str(record["source_group"]) for record in members])
+        means = _mean_utilities(members, [_fold_id(record) for record in members])
         chosen[env], _tie = _best_action(means)
     return chosen
 
 
 def _mean_utilities(records: Sequence[Mapping[str, Any]], groups: Sequence[str]) -> dict[str, float]:
+    """Environment macro-average. A larger environment does not dominate the fixed baseline."""
     allowed = set(groups)
-    chosen = [record for record in records if str(record["source_group"]) in allowed]
+    chosen = [record for record in records if _fold_id(record) in allowed]
     actions = sorted(chosen[0]["selection_utilities"])
-    return {
-        action: float(np.mean([float(record["selection_utilities"][action]) for record in chosen]))
-        for action in actions
-    }
+    by_env: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for record in chosen:
+        by_env[str(record["env"])].append(record)
+    means: dict[str, float] = {}
+    for action in actions:
+        env_means = [
+            float(np.mean([float(record["selection_utilities"][action]) for record in members]))
+            for members in by_env.values()
+        ]
+        means[action] = float(np.mean(env_means))
+    return means
+
+
+def _env_state_actions(records: Sequence[Mapping[str, Any]], groups: Sequence[str]) -> dict[tuple[str, str], str]:
+    buckets: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    allowed = set(groups)
+    for record in records:
+        if _fold_id(record) in allowed:
+            buckets[(str(record["env"]), str(record.get("state_id") or "unspecified"))].append(record)
+    chosen: dict[tuple[str, str], str] = {}
+    for key, members in buckets.items():
+        means = _mean_utilities(members, [_fold_id(record) for record in members])
+        chosen[key], _tie = _best_action(means)
+    return chosen
+
+
+def _fold_id(record: Mapping[str, Any]) -> str:
+    """Same experience batch stays in one fold across S0 and S_history."""
+    if record.get("experience_source_group"):
+        return str(record["experience_source_group"])
+    return str(record["source_group"])
 
 
 def _best_action(utilities: Mapping[str, float]) -> tuple[str, bool]:

@@ -94,6 +94,9 @@ def crossfit_selection_gain(
             "descriptive_only": False,
         }
     )
+    folded = _frozen_folds(matrix)
+    if folded is not None:
+        return _crossfit_from_folds(matrix, folded, result, retention_weight, weight_mode)
     if _same_task_repeats_only(matrix):
         result["valid"] = False
         result["generalization"] = False
@@ -110,6 +113,20 @@ def crossfit_selection_gain(
     hold_b = keys[1::2]
     forward = _direction(matrix, set(hold_a), set(hold_b), retention_weight, weight_mode)
     swap = _direction(matrix, set(hold_b), set(hold_a), retention_weight, weight_mode)
+    if not forward["valid"] or not swap["valid"]:
+        result["valid"] = False
+        result["generalization"] = False
+        result["reason"] = forward["reason"] or swap["reason"]
+        return result
+    return _combine_directions(forward, swap, result, weight_mode)
+
+
+def _combine_directions(
+    forward: Mapping[str, Any],
+    swap: Mapping[str, Any],
+    result: dict[str, Any],
+    weight_mode: str,
+) -> dict[str, Any]:
     if not forward["valid"] or not swap["valid"]:
         result["valid"] = False
         result["generalization"] = False
@@ -151,6 +168,7 @@ def bound_panel_headroom(
     weight_mode: str = WEIGHT_MACRO,
     alpha: float = PANEL_ALPHA,
     allow_population: bool = False,
+    independence_declared: bool = False,
 ) -> dict[str, Any]:
     """Simultaneous interval for the finite panel. A wide interval is insufficient evidence.
 
@@ -186,7 +204,8 @@ def bound_panel_headroom(
             return result
         return _population_bound(usable, packed, result, weight_mode)
     unequal_groups = any(not cell["group_sizes_equal"] for cell in usable)
-    result["finite_sample_guarantee"] = not unequal_groups
+    result["finite_sample_guarantee"] = bool(independence_declared) and not unequal_groups
+    result["independence_declared"] = bool(independence_declared)
     n_primitive = 0
     for cell in usable:
         if cell["future_group_means"]:
@@ -216,7 +235,7 @@ def bound_panel_headroom(
         return result
     result.update(gaps)
     result["valid"] = True
-    result["finite_sample_guarantee"] = not unequal_groups
+    result["finite_sample_guarantee"] = bool(independence_declared) and not unequal_groups
     if unequal_groups:
         result["reason"] = "unequal source groups; interval is not a guarantee for the task-pooled mean"
     result["interval_source"] = "hoeffding_bonferroni"
@@ -244,6 +263,52 @@ def _population_bound(
     return result
 
 
+def _frozen_folds(rows: Sequence[Mapping[str, Any]]) -> dict[str, set[str]] | None:
+    present = {str(row.get("probe_fold")) for row in rows if row.get("probe_fold")}
+    if not present:
+        return None
+    return {"A": {"A"}, "B": {"B"}} if present == {"A", "B"} else {"invalid": present}
+
+
+def _crossfit_from_folds(
+    rows: Sequence[Mapping[str, Any]],
+    folded: Mapping[str, set[str]],
+    result: dict[str, Any],
+    retention_weight: float,
+    weight_mode: str,
+) -> dict[str, Any]:
+    from expolicy.paper_d.constants import SPLIT_INSUFFICIENT
+
+    if "invalid" in folded:
+        result["valid"] = False
+        result["reason"] = SPLIT_INSUFFICIENT
+        return result
+    for fold in ("A", "B"):
+        roles = {str(row.get("probe_role")) for row in rows if str(row.get("probe_fold")) == fold}
+        if "future" not in roles or "retention" not in roles:
+            result["valid"] = False
+            result["reason"] = SPLIT_INSUFFICIENT
+            return result
+    forward = _direction_fold(rows, "A", "B", retention_weight, weight_mode)
+    swap = _direction_fold(rows, "B", "A", retention_weight, weight_mode)
+    return _combine_directions(forward, swap, result, weight_mode)
+
+
+def _direction_fold(
+    rows: Sequence[Mapping[str, Any]],
+    select_fold: str,
+    eval_fold: str,
+    retention_weight: float,
+    weight_mode: str,
+) -> dict[str, Any]:
+    return _direction_rows(
+        [dict(row) for row in rows if str(row.get("probe_fold")) == select_fold],
+        [dict(row) for row in rows if str(row.get("probe_fold")) == eval_fold],
+        retention_weight,
+        weight_mode,
+    )
+
+
 def _direction(
     rows: Sequence[Mapping[str, Any]],
     select_keys: set[str],
@@ -251,8 +316,22 @@ def _direction(
     retention_weight: float,
     weight_mode: str,
 ) -> dict[str, Any]:
-    selected = cell_table(_with_keys(rows, select_keys), retention_weight=retention_weight)
-    evaluated = cell_table(_with_keys(rows, eval_keys), retention_weight=retention_weight)
+    return _direction_rows(
+        _with_keys(rows, select_keys),
+        _with_keys(rows, eval_keys),
+        retention_weight,
+        weight_mode,
+    )
+
+
+def _direction_rows(
+    selected_rows: Sequence[Mapping[str, Any]],
+    evaluated_rows: Sequence[Mapping[str, Any]],
+    retention_weight: float,
+    weight_mode: str,
+) -> dict[str, Any]:
+    selected = cell_table(list(selected_rows), retention_weight=retention_weight)
+    evaluated = cell_table(list(evaluated_rows), retention_weight=retention_weight)
     select_pack = utilities_from_cells(selected)
     eval_pack = utilities_from_cells(evaluated)
     if panel_problem(selected, select_pack) or panel_problem(evaluated, eval_pack):

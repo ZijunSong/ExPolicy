@@ -21,6 +21,7 @@ def validate_prospectively(
     *,
     delta: float = DELTA,
     min_configs_for_correlation: int = MIN_CONFIGS_FOR_CORRELATION,
+    report_correlation: bool = True,
 ) -> dict[str, Any]:
     """Compare a frozen card with a later policy on new batches and future tasks.
 
@@ -36,18 +37,20 @@ def validate_prospectively(
         card = by_id.get(str(outcome.get("configuration_id")))
         rows.append(_one(card, outcome, delta))
     usable = [row for row in rows if row["validation_status"] == "ok"]
-    predicted_go = [row for row in usable if row["predicted_status"] == ACTIONABLE_HEADROOM]
-    predicted_nogo = [row for row in usable if row["predicted_status"] == ENV_FIXED_SUFFICIENT]
+    decided = [row for row in usable if not row.get("pending")]
+    predicted_go = [row for row in decided if row["predicted_status"] == ACTIONABLE_HEADROOM]
+    predicted_nogo = [row for row in decided if row["predicted_status"] == ENV_FIXED_SUFFICIENT]
     n_false_go = sum(1 for row in predicted_go if row["false_go"])
     n_false_nogo = sum(1 for row in predicted_nogo if row["false_nogo"])
     needs_more = [row for row in usable if row["predicted_status"] not in {ACTIONABLE_HEADROOM, ENV_FIXED_SUFFICIENT}]
     diagnostic_cost = _sum_if_complete(rows, "diagnostic_cost")
     training_cost = _sum_if_complete(rows, "training_cost")
-    correlation_reported = len(usable) >= min_configs_for_correlation
+    correlation_reported = bool(report_correlation) and len(usable) >= min_configs_for_correlation
     return {
         "rows": rows,
         "n_outcomes": len(rows),
         "n_usable": len(usable),
+        "n_pending": sum(1 for row in usable if row.get("pending")),
         "false_go_rate": None if not predicted_go else n_false_go / len(predicted_go),
         "false_nogo_rate": None if not predicted_nogo else n_false_nogo / len(predicted_nogo),
         "n_false_go": n_false_go,
@@ -73,14 +76,27 @@ def _one(card: Mapping[str, Any] | None, outcome: Mapping[str, Any], delta: floa
     if card is not None:
         overlap_batches = set(card.get("batch_ids") or []) & set(outcome.get("batch_ids") or [])
         overlap_tasks = set(card.get("task_ids") or []) & set(outcome.get("task_ids") or [])
-        if overlap_batches or overlap_tasks:
+        overlap_sources = set(card.get("experience_source_groups") or []) & set(outcome.get("experience_source_groups") or [])
+        if overlap_batches or overlap_tasks or overlap_sources:
             reasons.append("INVALID_OVERLAP")
     actual = outcome.get("actual_gain")
+    lower = outcome.get("actual_gain_lower")
+    upper = outcome.get("actual_gain_upper")
+    pending = False
+    if lower is not None and upper is not None and float(lower) <= float(delta) <= float(upper):
+        pending = True
     if actual is None:
         reasons.append("missing actual gain")
     predicted = None if card is None else card.get("primary_status")
-    false_go = predicted == ACTIONABLE_HEADROOM and actual is not None and float(actual) <= float(delta)
-    false_nogo = predicted == ENV_FIXED_SUFFICIENT and actual is not None and float(actual) > float(delta)
+    if pending:
+        false_go = False
+        false_nogo = False
+    elif lower is not None and upper is not None:
+        false_go = predicted == ACTIONABLE_HEADROOM and float(upper) <= float(delta)
+        false_nogo = predicted == ENV_FIXED_SUFFICIENT and float(lower) > float(delta)
+    else:
+        false_go = predicted == ACTIONABLE_HEADROOM and actual is not None and float(actual) <= float(delta)
+        false_nogo = predicted == ENV_FIXED_SUFFICIENT and actual is not None and float(actual) > float(delta)
     return {
         "configuration_id": outcome.get("configuration_id"),
         "card_hash": None if card is None else card.get("card_hash"),
@@ -88,6 +104,7 @@ def _one(card: Mapping[str, Any] | None, outcome: Mapping[str, Any], delta: floa
         "actual_gain": actual,
         "false_go": false_go,
         "false_nogo": false_nogo,
+        "pending": pending,
         "validation_status": "ok" if not reasons else "invalid",
         "reasons": reasons,
         "diagnostic_cost": outcome.get("diagnostic_cost"),
