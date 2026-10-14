@@ -86,9 +86,13 @@ class PersistentLedger:
         if cursor.rowcount != 1:
             raise ProtocolError("attempt cannot be restarted")
 
-    def import_historical(self, rows: list[tuple[str, str, str, int, int]]) -> None:
-        """Record already spent attempts from an earlier run. They stay inside the same cap."""
-        for attempt_id, logical_id, job_kind, episodes, tokens in rows:
+    def import_historical(self, rows: list[tuple]) -> None:
+        """Record already spent attempts. Preserve the origin state instead of relabeling failures."""
+        for row in rows:
+            attempt_id, logical_id, job_kind, episodes, tokens = row[:5]
+            state = str(row[5]) if len(row) > 5 else "COMPLETED"
+            if state not in {"COMPLETED", "FAILED", "UNKNOWN", "STARTED", "RESERVED"}:
+                state = "UNKNOWN"
             existing = self._db.execute("SELECT 1 FROM attempts WHERE attempt_id = ?", (attempt_id,)).fetchone()
             if existing:
                 continue
@@ -97,9 +101,9 @@ class PersistentLedger:
                 INSERT INTO attempts (
                     attempt_id, logical_execution_id, job_kind, planned_episodes, state,
                     reserved_at, finished_at, tokens
-                ) VALUES (?, ?, ?, ?, 'COMPLETED', ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (attempt_id, logical_id, job_kind, episodes, time.time(), time.time(), tokens),
+                (attempt_id, logical_id, job_kind, episodes, state, time.time(), time.time(), tokens),
             )
 
     def finish_attempt(self, attempt_id: str, *, tokens: int, tool_calls: int, result_hash: str) -> None:

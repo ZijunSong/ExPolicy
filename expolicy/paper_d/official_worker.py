@@ -70,10 +70,9 @@ def execute_official_job(job: Mapping[str, Any], *, ledger: PersistentLedger, ru
     prior = ledger.completed_hash(str(job["logical_execution_id"]))
     if prior and result_path.is_file():
         cached = json.loads(result_path.read_text(encoding="utf-8"))
-        recomputed = sha256_json({key: value for key, value in cached.items() if key not in {"result_hash", "cache_hit"}})
         same_job = cached.get("job", {}).get("logical_execution_id") == job["logical_execution_id"]
         if (
-            recomputed == prior
+            artifact_digest_matches(cached, prior)
             and same_job
             and cached.get("execution_complete") is True
             and cached.get("infra_status") == "ok"
@@ -116,7 +115,7 @@ def execute_official_job(job: Mapping[str, Any], *, ledger: PersistentLedger, ru
         artifact = {
             "execution_complete": True,
             "cache_hit": False,
-            "execution_revision": EXECUTION_REVISION,
+            "execution_revision": str(job.get("execution_revision") or EXECUTION_REVISION),
             "execution_schema_version": EXECUTION_SCHEMA,
             "job": {key: job[key] for key in job if key != "instruction_hint"},
             "instruction_hash": sha256_json(job["instruction_hint"]),
@@ -139,9 +138,7 @@ def execute_official_job(job: Mapping[str, Any], *, ledger: PersistentLedger, ru
             "environment_events": list(getattr(lab.task, "events", [])),
             "trajectory": list(result.trajectory),
         }
-        artifact["result_hash"] = sha256_json(
-            {key: value for key, value in artifact.items() if key != "result_hash"}
-        )
+        artifact["result_hash"] = artifact_digest(artifact)
         _atomic_write(result_path, artifact)
         _write_traces(result_path.parent, artifact)
         ledger.finish_attempt(
@@ -167,6 +164,19 @@ def execute_official_job(job: Mapping[str, Any], *, ledger: PersistentLedger, ru
     finally:
         if lab is not None:
             lab.close()
+
+
+def artifact_digest(artifact: Mapping[str, Any]) -> str:
+    """Hash used both when writing and when checking a cache hit."""
+    payload = {key: value for key, value in artifact.items() if key not in {"result_hash", "cache_hit"}}
+    return sha256_json(payload)
+
+
+def artifact_digest_matches(artifact: Mapping[str, Any], stored: str) -> bool:
+    if artifact_digest(artifact) == stored:
+        return True
+    legacy = {key: value for key, value in artifact.items() if key != "result_hash"}
+    return sha256_json(legacy) == stored
 
 
 class _TracingTask:
