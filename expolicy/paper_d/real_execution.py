@@ -38,6 +38,7 @@ def preflight(config: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "status": "PASS" if not reasons else "BLOCKED",
         "reasons": reasons,
+        "config_hash": config.get("config_hash"),
         "model_present": model_path.is_dir(),
         "manifest_hash": None if manifest is None else sha256_file(manifest_path),
         "split_hash": sha256_file(split_path) if split_path.is_file() else None,
@@ -47,15 +48,18 @@ def preflight(config: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def execute_smoke(config: Mapping[str, Any], *, execute: bool) -> dict[str, Any]:
+def execute_smoke(config: Mapping[str, Any], *, execute: bool, runner: Any = None) -> dict[str, Any]:
     report = preflight(config)
     if not execute:
         return {"status": "DRY_RUN", "episodes": 0, "preflight": report}
     if report["status"] != "PASS":
-        raise RealExecutionRefused("smoke execute is blocked by preflight")
-    raise RealExecutionRefused(
-        "structural preflight passed, but this process has no isolated OfficialLabEnv worker; refusing to synthesize episodes"
-    )
+        raise RealExecutionRefused("smoke execute is blocked by preflight: " + "; ".join(report["reasons"]))
+    if runner is None:
+        raise RealExecutionRefused("official worker runner was not supplied; refusing to synthesize episodes")
+    produced = runner(config)
+    if int(produced.get("episodes") or 0) <= 0 or not produced.get("artifact_paths"):
+        raise RealExecutionRefused("worker returned no official artifacts")
+    return {"status": "EXECUTED", "episodes": int(produced["episodes"]), "preflight": report, "artifacts": produced}
 
 
 def write_real_decision(directory: Path, *, preflight_report: Mapping[str, Any], smoke: Mapping[str, Any]) -> None:
@@ -85,10 +89,21 @@ def write_real_decision(directory: Path, *, preflight_report: Mapping[str, Any],
         lines.append("结构审计通过后，才允许解释 headroom。")
     lines.append("")
     (directory / "D_REAL_DECISION.md").write_text("\n".join(lines), encoding="utf-8")
-    (directory / "D_PROTOCOL_LOCK.json").write_text(
-        json.dumps({"config_hash": preflight_report.get("manifest_hash"), "plan": plan}, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    lock_path = directory / "D_PROTOCOL_LOCK.json"
+    if not lock_path.exists():
+        lock_path.write_text(
+            json.dumps(
+                {
+                    "config_hash": preflight_report.get("config_hash"),
+                    "manifest_hash": preflight_report.get("manifest_hash"),
+                    "split_hash": preflight_report.get("split_hash"),
+                    "plan": plan,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     (directory / "D_RUN_PLAN.json").write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
     (directory / "D_SPLIT_AUDIT.md").write_text(_split_note(preflight_report), encoding="utf-8")
 

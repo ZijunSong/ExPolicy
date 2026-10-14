@@ -74,9 +74,18 @@ def audit_paired_rows(rows: Sequence[Mapping[str, Any]], *, offset: float = NOOP
     if any(item != task_sets[0] for item in task_sets):
         reasons.append("baseline task set differs across no-op branches")
     grouped: dict[tuple[str, ...], dict[str, Mapping[str, Any]]] = {}
+    seen_keys: set[tuple[str, tuple[str, ...]]] = set()
     for branch in NOOP_BRANCHES:
         for row in by_branch[branch]:
-            grouped.setdefault(_pair_key(row), {})[branch] = row
+            key = _pair_key(row)
+            if (branch, key) in seen_keys:
+                reasons.append("duplicate primary key")
+                continue
+            seen_keys.add((branch, key))
+            if row.get("outcome") is None:
+                reasons.append(f"null outcome for {key}")
+                continue
+            grouped.setdefault(key, {})[branch] = row
     for key, branches in grouped.items():
         if any(branch not in branches for branch in NOOP_BRANCHES):
             reasons.append(f"incomplete no-op pair {key}")
@@ -87,13 +96,17 @@ def audit_paired_rows(rows: Sequence[Mapping[str, Any]], *, offset: float = NOOP
             reasons.append(f"initial prompt differs across no-op branches for task {key[3]}")
         if len(models) != 1:
             reasons.append(f"model hash differs across no-op branches for task {key[3]}")
-    base = {str(row["task_id"]): float(row["outcome"]) for row in by_branch["BASE"]}
+    base = {
+        _pair_key(row): float(row["outcome"])
+        for row in by_branch["BASE"]
+        if row.get("outcome") is not None
+    }
     for branch in ("DISCARD", "REJECTED_EDIT"):
-        deltas = [
-            float(row["outcome"]) - base[str(row["task_id"])]
-            for row in by_branch[branch]
-            if str(row["task_id"]) in base and row.get("outcome") is not None
-        ]
+        deltas = []
+        for row in by_branch[branch]:
+            key = _pair_key(row)
+            if key in base and row.get("outcome") is not None:
+                deltas.append(float(row["outcome"]) - base[key])
         if deltas and abs(sum(deltas) / len(deltas)) > offset:
             reasons.append(f"unexplained raw no-op offset on {branch}")
     return reasons
@@ -205,6 +218,10 @@ def _audit_states(states: Sequence[Mapping[str, Any]]) -> list[str]:
             task_sets.append(tuple(branch.get("task_ids") or []))
             for resource in CLONE_RESOURCES:
                 info = (branch.get("resources") or {}).get(resource) or {}
+                if info.get("applicability") or info.get("mode") == "readonly":
+                    for failure in resource_isolation_failures(info):
+                        reasons.append(f"{branch_name}:{resource}: {failure}")
+                    continue
                 clone_id = info.get("clone_id")
                 reset_id = info.get("reset_id")
                 if not clone_id or not reset_id:

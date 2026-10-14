@@ -308,6 +308,20 @@ def test_pending_interval_is_not_a_false_go_and_real_correlation_stays_off():
     assert overlap["rows"][0]["validation_status"] == "invalid"
 
 
+def test_ledger_survives_reopen_and_blocks_the_cap(tmp_path):
+    from expolicy.paper_d.persistent_ledger import PersistentLedger
+
+    path = tmp_path / "ledger.sqlite"
+    first = PersistentLedger(path, cap=1)
+    assert first.reserve_attempt("a1", "logical", job_kind="vertical") is True
+    first.mark_started("a1")
+    first.close()
+    second = PersistentLedger(path, cap=1)
+    assert second.spent() == 1
+    assert second.reserve_attempt("a2", "other", job_kind="vertical") is False
+    second.close()
+
+
 def test_real_config_and_execute_do_not_invent_episodes():
     config = load_real_config()
     assert config["protocol_version"] == "D-v1.1"
