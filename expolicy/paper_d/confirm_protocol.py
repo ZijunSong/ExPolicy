@@ -1,0 +1,50 @@
+"""Settings for the last planned OS content confirmation.
+
+This stage was written after content-os-v1. It does not change that result,
+does not train a router, and does not start a second model.
+"""
+
+from __future__ import annotations
+
+PROTOCOL = {
+    "stage_id": "D-content-os-confirm-v1",
+    "parent_stage": "D-content-os-v1",
+    "formal_claim": False,
+    "updater": "EPISODIC_REPLAY",
+    "delta_reference": 0.02,
+    "retention_weight": 0.5,
+    "environment": "os",
+    "state_id": "S0",
+    "batches": 6,
+    "sources_per_batch": 8,
+    "max_successes_written": 4,
+    "n_future": 32,
+    "n_retention": 16,
+    "shrink_future": 24,
+    "shrink_retention": 12,
+    "repeats": 2,
+    "conditions": ["NO_UPDATE", "REAL", "EMPTY", "MATCHED_WRONG"],
+    "task_seed": 20261015,
+    "order_seed": 20261015,
+    "length_tolerance": 0.20,
+    "near_copy_jaccard": 0.85,
+    "skill_distance_max": 0.50,
+    "donor_cap": 96,
+    "phase_episode_cap": 2800,
+    "cumulative_cap": 6000,
+    "phase_token_cap": 20_000_000,
+    "retry_pool": 128,
+    "bootstrap_draws": 20000,
+    "simultaneous_tail": 0.05 / 3 / 2,
+    "min_positive_batches": 4,
+    "inference_seed": 0,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_tokens": 1024,
+    "served_name": "qwen3-14b-r9",
+    "port": 18102,
+    "tokenizer_path": "/data/ppnm/models/Qwen3-14B",
+    "neutral_instruction": "Memory slot.",
+    "neutral_action": "Noted.",
+    "primary_estimates": ["U-REAL-NO_UPDATE", "U-REAL-EMPTY", "U-REAL-WRONG"],
+}
